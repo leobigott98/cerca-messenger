@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "363246860173",
+    "project_id": "cerca-messenger",
+    "storage_bucket": "cerca-messenger.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:363246860173:android:db71ab098e899128f32fc4",
+        "android_client_info": {
+          "package_name": "com.leobigott.cercamessenger"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBmmNcAEIL9vzzdSPpM1fxAOC5UxALoRJA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
