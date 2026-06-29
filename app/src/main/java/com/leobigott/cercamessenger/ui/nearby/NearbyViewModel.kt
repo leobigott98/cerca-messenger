@@ -13,6 +13,8 @@ import kotlinx.coroutines.launch
 
 data class NearbyUiState(
     val isDiscovering: Boolean = true,
+    val isRefreshing: Boolean = false,
+    val lastActionMessage: String? = null,
     val devices: List<DeviceNode> = emptyList()
 )
 
@@ -26,6 +28,31 @@ class NearbyViewModel(
         viewModelScope.launch {
             protocolEngine.observeNearbyDevices().collect { devices ->
                 _uiState.update { it.copy(devices = devices, isDiscovering = true) }
+            }
+        }
+    }
+
+    fun refreshNearbyNow() {
+        if (_uiState.value.isRefreshing) return
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(isRefreshing = true, lastActionMessage = "Buscando nodos cercanos...")
+            }
+
+            runCatching {
+                protocolEngine.refreshNearby()
+            }.onSuccess {
+                _uiState.update {
+                    it.copy(isRefreshing = false, lastActionMessage = "Búsqueda de nodos solicitada.")
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        isRefreshing = false,
+                        lastActionMessage = error.message ?: "No se pudo refrescar Nearby."
+                    )
+                }
             }
         }
     }

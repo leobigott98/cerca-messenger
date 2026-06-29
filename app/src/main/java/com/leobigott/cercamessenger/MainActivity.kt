@@ -32,6 +32,7 @@ import androidx.core.content.ContextCompat
 import com.leobigott.cercamessenger.core.design.theme.CercaMessengerTheme
 import com.leobigott.cercamessenger.protocol.ProtocolEngineProvider
 import com.leobigott.cercamessenger.protocol.nearby.NearbyLifecycleService
+import com.leobigott.cercamessenger.settings.CercaSettingsStore
 
 class MainActivity : ComponentActivity() {
 
@@ -39,6 +40,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         ProtocolEngineProvider.init(applicationContext)
+        CercaSettingsStore.load(applicationContext)
 
         setContent {
             CercaMessengerTheme {

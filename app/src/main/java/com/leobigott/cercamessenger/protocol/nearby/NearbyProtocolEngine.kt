@@ -2,7 +2,6 @@ package com.leobigott.cercamessenger.protocol.nearby
 
 import android.Manifest
 import android.content.Context
-import androidx.annotation.RequiresPermission
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
 import com.google.android.gms.nearby.connection.ConnectionInfo
@@ -51,7 +50,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.nio.charset.StandardCharsets
@@ -119,7 +117,8 @@ class NearbyProtocolEngine(
     }
 
     override suspend fun syncCloudNow() {
-        runCatching { cloudSyncService.syncNow() }
+        cloudSyncService.syncNow()
+        tryForwardAll()
     }
 
     private fun loadNodeMode(): NodeMode {
@@ -530,6 +529,37 @@ class NearbyProtocolEngine(
     }
 
     @SuppressLint("MissingPermission")
+    override suspend fun refreshNearby() {
+        if (!hasNearbyPermissions()) {
+            Log.e(TAG, "refreshNearby aborted: missing Nearby permissions")
+            return
+        }
+
+        Log.d(
+            TAG,
+            "Manual/heartbeat refresh. connected=${connectedEndpoints.size}, connecting=${connectingEndpoints.size}"
+        )
+
+        // 1) Mantener vivas las conexiones existentes.
+        connectedEndpoints.toList().forEach { endpointId ->
+            sendHello(endpointId)
+            sendSummary(endpointId)
+        }
+
+        // 2) Intentar arrancar advertising/discovery si no están activos.
+        startDiscovery()
+
+        // 3) Intentar reenviar mensajes pendientes.
+        tryForwardAll()
+
+        // 4) Si hay internet, sincronizar nube y volver a intentar forwarding.
+        if (statusProvider.hasInternet()) {
+            cloudSyncService.syncNow()
+            tryForwardAll()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
     override suspend fun startDiscovery() {
         if (!hasNearbyPermissions()) {
             Log.e(TAG, "startDiscovery aborted: missing Nearby permissions")
@@ -670,7 +700,7 @@ class NearbyProtocolEngine(
 
             connectingEndpoints.add(endpointId)
 
-            client.requestConnection(displayName, endpointId, connectionLifecycleCallback)
+            client.requestConnection(advertisingName, endpointId, connectionLifecycleCallback)
                 .addOnSuccessListener {
                     Log.d(TAG, "requestConnection SUCCESS endpointId=$endpointId")
                 }
@@ -678,7 +708,9 @@ class NearbyProtocolEngine(
                     Log.e(TAG, "requestConnection FAILED endpointId=$endpointId error=${error.message}", error)
 
                     connectingEndpoints.remove(endpointId)
-                    restartNearbySoon()
+                    scope.launch {
+                        startDiscovery()
+                    }
                 }
         }
 
@@ -714,7 +746,9 @@ class NearbyProtocolEngine(
                     connectingEndpoints.remove(endpointId)
                     connectedEndpoints.remove(endpointId)
 
-                    restartNearbySoon()
+                    scope.launch {
+                        startDiscovery()
+                    }
                 }
         }
 
@@ -745,7 +779,9 @@ class NearbyProtocolEngine(
                 Log.e(TAG, "Connection FAILED endpointId=$endpointId status=${result.status.statusCode}")
 
                 connectedEndpoints.remove(endpointId)
-                restartNearbySoon()
+                scope.launch {
+                    startDiscovery()
+                }
             }
         }
 
@@ -1317,9 +1353,8 @@ class NearbyProtocolEngine(
                     scope.launch {
                         database.peerDao().markDisconnected(endpointId)
                         updateDensity()
+                        startDiscovery()
                     }
-
-                    restartNearbySoon()
                 }
         }.onFailure { error ->
             Log.e(TAG, "sendPayload THREW endpointId=$endpointId type=${envelope.type} error=${error.message}", error)
@@ -1448,10 +1483,12 @@ class NearbyProtocolEngine(
         lastCloudSyncAt = now
 
         scope.launch {
-            runCatching { cloudSyncService.syncNow() }
-                .onFailure { error ->
-                    Log.e(TAG, "cloudSync failed: ${error.message}", error)
-                }
+            runCatching {
+                cloudSyncService.syncNow()
+                tryForwardAll()
+            }.onFailure { error ->
+                Log.e(TAG, "cloudSync failed: ${error.message}", error)
+            }
         }
     }
 
@@ -1478,7 +1515,7 @@ class NearbyProtocolEngine(
         kotlinx.coroutines.delay(1000)
 
         if (hasNearbyPermissions()) {
-            @SuppressLint("MissingPermission")
+
             startDiscovery()
         } else {
             Log.e(TAG, "restartNearby aborted: missing permissions")

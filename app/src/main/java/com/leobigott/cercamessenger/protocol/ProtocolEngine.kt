@@ -15,6 +15,7 @@ interface ProtocolEngine {
     suspend fun sendMessage(conversationId: String, destinationId: String, text: String)
     suspend fun markConversationRead(conversationId: String)
     suspend fun restartNearby()
+    suspend fun refreshNearby()
     suspend fun sendCrisisMessage(
         type: CrisisMessageType,
         text: String,

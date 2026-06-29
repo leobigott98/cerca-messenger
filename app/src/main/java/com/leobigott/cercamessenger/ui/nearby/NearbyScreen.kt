@@ -23,6 +23,10 @@ import com.leobigott.cercamessenger.core.design.components.StatusCard
 import com.leobigott.cercamessenger.core.model.DeviceNode
 import com.leobigott.cercamessenger.ui.nearby.components.DeviceNodeCard
 import com.leobigott.cercamessenger.core.model.LocalizationStore
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,6 +57,27 @@ fun NearbyScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(bottom = 16.dp)
         ) {
+            item {
+                Button(
+                    onClick = viewModel::refreshNearbyNow,
+                    enabled = !state.isRefreshing
+                ) {
+                    if (state.isRefreshing) {
+                        CircularProgressIndicator()
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+                    Text("Buscar nodos ahora")
+                }
+            }
+
+            state.lastActionMessage?.let { message ->
+                item {
+                    StatusCard(
+                        title = "Nearby",
+                        subtitle = message
+                    )
+                }
+            }
             items(state.devices) { device ->
                 DeviceNodeCard(device = device)
             }

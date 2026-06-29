@@ -156,10 +156,14 @@ interface DtnMessageDao {
     @Query("""
         SELECT * FROM dtn_messages
         WHERE syncedToCloud = 0
-        AND conversationId IN ('crisis-broadcast', 'public-broadcast')
-        AND status NOT IN ('EXPIRED', 'FAILED')
+        AND ttlExpiresAt > :now
+        AND status NOT IN ('DELIVERED', 'EXPIRED', 'FAILED')
+        ORDER BY 
+            isEmergency DESC,
+            crisisPriority DESC,
+            timestamp ASC
     """)
-    suspend fun getUnsyncedCloudMessages(): List<DtnMessageEntity>
+    suspend fun getUnsyncedCloudMessages(now: Long = System.currentTimeMillis()): List<DtnMessageEntity>
 
     @Query("UPDATE dtn_messages SET syncedToCloud = 1 WHERE id = :messageId")
     suspend fun markSyncedToCloud(messageId: String)

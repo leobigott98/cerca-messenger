@@ -1,6 +1,5 @@
 package com.leobigott.cercamessenger.ui.settings
 
-import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
@@ -37,12 +36,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.leobigott.cercamessenger.core.design.components.StatusCard
 import com.leobigott.cercamessenger.core.model.AppLanguage
 import com.leobigott.cercamessenger.core.model.LocalizationStore
 import com.leobigott.cercamessenger.core.model.NodeMode
 import com.leobigott.cercamessenger.protocol.ProtocolEngineProvider
 import kotlinx.coroutines.launch
+import com.leobigott.cercamessenger.settings.CercaSettingsStore
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,7 +49,6 @@ fun SettingsScreen(
     contentPadding: PaddingValues,
     viewModel: SettingsViewModel = viewModel(factory = SettingsViewModelFactory(LocalContext.current))
 ) {
-    val mockMode = remember { mutableStateOf(true) }
     val metadata = remember { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
     val engine = ProtocolEngineProvider.engine
@@ -61,6 +59,7 @@ fun SettingsScreen(
     val strings = LocalizationStore.strings(language)
     var confirmDeleteMessages by remember { mutableStateOf(false) }
     var confirmDeleteContacts by remember { mutableStateOf(false) }
+    val heartbeatSeconds by CercaSettingsStore.heartbeatSeconds.collectAsState()
 
     LaunchedEffect(state.result) {
         when (val result = state.result) {
@@ -133,11 +132,27 @@ fun SettingsScreen(
             }
             item {
                 ListItem(
-                    headlineContent = { Text(strings.foregroundService) },
-                    supportingContent = { Text(strings.foregroundServiceDescription) },
-                    trailingContent = { Switch(checked = mockMode.value, onCheckedChange = { mockMode.value = it }) },
-                    modifier = Modifier.padding(top = 0.dp)
+                    headlineContent = { Text("Frecuencia de búsqueda") },
+                    supportingContent = {
+                        Text("Menor intervalo = comunicación más rápida, pero mayor consumo de batería.")
+                    }
                 )
+            }
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CercaSettingsStore.allowedHeartbeatSeconds.forEach { seconds ->
+                        FilterChip(
+                            selected = heartbeatSeconds == seconds,
+                            onClick = {
+                                CercaSettingsStore.setHeartbeatSeconds(context, seconds)
+                                scope.launch {
+                                    engine.refreshNearby()
+                                }
+                            },
+                            label = { Text("${seconds}s") }
+                        )
+                    }
+                }
             }
             item {
                 ListItem(

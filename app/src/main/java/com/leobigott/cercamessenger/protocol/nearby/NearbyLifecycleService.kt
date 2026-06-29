@@ -1,7 +1,6 @@
 package com.leobigott.cercamessenger.protocol.nearby
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
@@ -21,6 +20,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import com.leobigott.cercamessenger.settings.CercaSettingsStore
 
 class NearbyLifecycleService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -75,7 +75,6 @@ class NearbyLifecycleService : Service() {
             runCatching {
                 Log.d(TAG, "Ensuring Nearby is started from service")
 
-                @SuppressLint("MissingPermission")
                 ProtocolEngineProvider.engine.startDiscovery()
 
                 Log.d(TAG, "Nearby ensure-start requested")
@@ -94,9 +93,7 @@ class NearbyLifecycleService : Service() {
                 if (hasNearbyPermissions()) {
                     runCatching {
                         Log.d(TAG, "Nearby heartbeat: ensuring discovery is active")
-
-                        @SuppressLint("MissingPermission")
-                        ProtocolEngineProvider.engine.startDiscovery()
+                        ProtocolEngineProvider.engine.refreshNearby()
                     }.onFailure { error ->
                         Log.e(TAG, "Nearby heartbeat failed: ${error.message}", error)
                     }
@@ -104,7 +101,8 @@ class NearbyLifecycleService : Service() {
                     Log.e(TAG, "Nearby heartbeat skipped: missing permissions")
                 }
 
-                delay(30_000L)
+                val heartbeatMillis = CercaSettingsStore.heartbeatSeconds.value * 1000L
+                delay(heartbeatMillis)
             }
         }
     }

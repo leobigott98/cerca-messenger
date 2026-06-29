@@ -10,6 +10,7 @@ import com.leobigott.cercamessenger.core.model.DestinationScope
 import com.leobigott.cercamessenger.data.local.CercaDatabase
 import com.leobigott.cercamessenger.data.local.DtnMessageEntity
 import kotlinx.coroutines.tasks.await
+import android.util.Log
 
 /**
  * Cloud bridge for CERCA.
@@ -24,11 +25,17 @@ class FirebaseCloudSyncService(
     private val firestore: FirebaseFirestore = FirebaseFirestore.getInstance(),
     private val auth: FirebaseAuth = FirebaseAuth.getInstance()
 ) : CloudSyncService {
+    private companion object {
+        private const val TAG = "CERCA_Firebase"
+    }
 
     override suspend fun syncNow() {
+        Log.d(TAG, "syncNow started")
         ensureAnonymousAuth()
         uploadUnsyncedMessages()
         downloadActiveCrisisReports()
+        downloadActiveDtnMessages()
+        Log.d(TAG, "syncNow finished")
     }
 
     private suspend fun ensureAnonymousAuth() {
@@ -39,11 +46,20 @@ class FirebaseCloudSyncService(
 
     private suspend fun uploadUnsyncedMessages() {
         val unsynced = database.messageDao().getUnsyncedCloudMessages()
+
         unsynced.forEach { message ->
-            val doc = firestore.collection("crisis_reports").document(message.id)
+            val collection = when (message.destinationScope) {
+                DestinationScope.PUBLIC_BROADCAST.name,
+                DestinationScope.CRISIS_GATEWAY.name -> "crisis_reports"
+                else -> "dtn_messages"
+            }
+            val doc = firestore.collection(collection).document(message.id)
+
             doc.set(message.toFirestoreMap(localNodeId), SetOptions.merge()).await()
+
             database.messageDao().markSyncedToCloud(message.id)
         }
+        Log.d(TAG, "uploadUnsyncedMessages count=${unsynced.size}")
     }
 
     private suspend fun downloadActiveCrisisReports() {
@@ -89,6 +105,61 @@ class FirebaseCloudSyncService(
             )
         }
         if (downloaded.isNotEmpty()) database.messageDao().upsertAll(downloaded)
+        Log.d(TAG, "downloadActiveCrisisReports count=${downloaded.size}")
+    }
+
+    private suspend fun downloadActiveDtnMessages() {
+        val now = System.currentTimeMillis()
+
+        val snapshot = firestore.collection("dtn_messages")
+            .whereGreaterThan("ttlExpiresAt", now)
+            .limit(500)
+            .get()
+            .await()
+
+        val localExisting = database.messageDao().getBufferMessageIds().toSet()
+
+        val downloaded = snapshot.documents.mapNotNull { doc ->
+            if (doc.id in localExisting) return@mapNotNull null
+
+            val senderId = doc.getString("senderId") ?: return@mapNotNull null
+            if (senderId == localNodeId) return@mapNotNull null
+
+            val destinationId = doc.getString("destinationId") ?: return@mapNotNull null
+
+            DtnMessageEntity(
+                id = doc.id,
+                conversationId = doc.getString("conversationId") ?: "conv-$destinationId",
+                senderId = senderId,
+                destinationId = destinationId,
+                text = doc.getString("text") ?: "Encrypted relay message",
+                encryptedBodyJson = doc.getString("encryptedBodyJson"),
+                isEncrypted = doc.getBoolean("isEncrypted") ?: true,
+                timestamp = doc.getLong("timestamp") ?: now,
+                receivedAt = now,
+                ttlExpiresAt = doc.getLong("ttlExpiresAt") ?: (now + 24 * 60 * 60 * 1000L),
+                isFromMe = false,
+                isEmergency = doc.getBoolean("isEmergency") ?: false,
+                crisisType = doc.getString("crisisType")!!,
+                crisisPriority = (doc.getLong("crisisPriority") ?: 1L).toInt(),
+                verificationStatus = doc.getString("verificationStatus")!!,
+                approximateLocation = doc.getString("approximateLocation"),
+                peopleAffected = doc.getLong("peopleAffected")?.toInt(),
+                requiresResponse = doc.getBoolean("requiresResponse") ?: false,
+                destinationScope = doc.getString("destinationScope") ?: DestinationScope.DIRECT_CONTACT.name,
+                status = MessageStatus.RELAYED.name,
+                copiesLeft = (doc.getLong("copiesLeft") ?: 8L).toInt(),
+                hopCount = (doc.getLong("hopCount") ?: 0L).toInt(),
+                pathCsv = doc.getString("pathCsv") ?: senderId,
+                bestRelayName = "Firebase gateway",
+                utilityScore = null,
+                syncedToCloud = true
+            )
+        }
+
+        if (downloaded.isNotEmpty()) {
+            database.messageDao().upsertAll(downloaded)
+        }
     }
 
     private fun DtnMessageEntity.toFirestoreMap(localNodeId: String): Map<String, Any?> = mapOf(
@@ -98,6 +169,8 @@ class FirebaseCloudSyncService(
         "uploadedByNodeId" to localNodeId,
         "destinationId" to destinationId,
         "text" to text,
+        "encryptedBodyJson" to encryptedBodyJson,
+        "isEncrypted" to isEncrypted,
         "timestamp" to timestamp,
         "receivedAt" to receivedAt,
         "ttlExpiresAt" to ttlExpiresAt,
