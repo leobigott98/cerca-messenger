@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -21,10 +22,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import com.leobigott.cercamessenger.settings.CercaSettingsStore
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 
 class NearbyLifecycleService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var heartbeatStarted = false
+    private var cloudSyncStarted = false
 
     override fun onCreate() {
         super.onCreate()
@@ -47,6 +51,7 @@ class NearbyLifecycleService : Service() {
         )
 
         startHeartbeat()
+        startCloudSyncLoop()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -59,6 +64,37 @@ class NearbyLifecycleService : Service() {
         }
 
         return START_STICKY
+    }
+
+    private fun hasInternetConnection(): Boolean {
+        val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = connectivityManager.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    private fun startCloudSyncLoop() {
+        if (cloudSyncStarted) return
+        cloudSyncStarted = true
+
+        scope.launch {
+            while (true) {
+                if (hasInternetConnection()) {
+                    runCatching {
+                        Log.d(TAG, "Cloud sync loop: syncing Firebase")
+                        ProtocolEngineProvider.engine.syncCloudNow()
+                    }.onFailure { error ->
+                        Log.e(TAG, "Cloud sync loop failed: ${error.message}", error)
+                    }
+                } else {
+                    Log.d(TAG, "Cloud sync loop skipped: no validated internet")
+                }
+
+                delay(60_000L)
+            }
+        }
     }
 
     override fun onDestroy() {

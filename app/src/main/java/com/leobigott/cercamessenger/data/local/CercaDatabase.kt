@@ -13,9 +13,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         PeerEntity::class,
         ContactEntity::class,
         AckEntity::class,
-        PredictionEntity::class
+        PredictionEntity::class,
+        DeletedMessageEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class CercaDatabase : RoomDatabase() {
@@ -24,6 +25,7 @@ abstract class CercaDatabase : RoomDatabase() {
     abstract fun contactDao(): ContactDao
     abstract fun ackDao(): AckDao
     abstract fun predictionDao(): PredictionDao
+    abstract fun deletedMessageDao(): DeletedMessageDao
 
     companion object {
         private val MIGRATION_3_4 = object : Migration(3, 4) {
@@ -48,6 +50,20 @@ abstract class CercaDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+            CREATE TABLE IF NOT EXISTS deleted_messages (
+                messageId TEXT NOT NULL PRIMARY KEY,
+                deletedAt INTEGER NOT NULL,
+                reason TEXT NOT NULL
+            )
+            """.trimIndent()
+                )
+            }
+        }
+
         @Volatile
         private var INSTANCE: CercaDatabase? = null
 
@@ -58,7 +74,7 @@ abstract class CercaDatabase : RoomDatabase() {
                     CercaDatabase::class.java,
                     "cerca_messenger.db"
                 )
-                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                     .also { INSTANCE = it }
             }

@@ -17,6 +17,10 @@ interface ProtocolEngine {
     suspend fun restartNearby()
     suspend fun refreshNearby()
     suspend fun forceNearbyScan()
+    suspend fun deleteMessage(messageId: String)
+    suspend fun deletePublicBroadcast(messageId: String)
+    suspend fun deleteAllPublicBroadcasts()
+    suspend fun deleteConversation(conversationId: String)
     suspend fun sendCrisisMessage(
         type: CrisisMessageType,
         text: String,

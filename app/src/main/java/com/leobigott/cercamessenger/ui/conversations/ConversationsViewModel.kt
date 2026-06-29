@@ -8,10 +8,13 @@ import com.leobigott.cercamessenger.core.model.Conversation
 import com.leobigott.cercamessenger.data.local.CercaDatabase
 import com.leobigott.cercamessenger.data.local.toConversation
 import com.leobigott.cercamessenger.protocol.DeviceIdentityStore
+import com.leobigott.cercamessenger.protocol.ProtocolEngine
+import com.leobigott.cercamessenger.protocol.ProtocolEngineProvider
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 data class ConversationsUiState(
     val meshStatus: String = "Offline mesh active",
@@ -21,6 +24,7 @@ data class ConversationsUiState(
 
 class ConversationsViewModel(
     context: Context,
+    private val protocolEngine: ProtocolEngine = ProtocolEngineProvider.engine,
     database: CercaDatabase = CercaDatabase.getInstance(context.applicationContext)
 ) : ViewModel() {
     private val localNodeId = DeviceIdentityStore.getOrCreateNodeId(context.applicationContext)
@@ -37,6 +41,12 @@ class ConversationsViewModel(
             SharingStarted.WhileSubscribed(5_000),
             ConversationsUiState()
         )
+
+    fun deleteConversation(conversationId: String) {
+        viewModelScope.launch {
+            protocolEngine.deleteConversation(conversationId)
+        }
+    }
 }
 
 class ConversationsViewModelFactory(

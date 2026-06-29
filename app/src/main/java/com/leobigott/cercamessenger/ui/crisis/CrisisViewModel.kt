@@ -102,6 +102,18 @@ class CrisisViewModel(
             }
         }
     }
+
+    fun deletePublicBroadcast(messageId: String) {
+        viewModelScope.launch {
+            protocolEngine.deletePublicBroadcast(messageId)
+        }
+    }
+
+    fun deleteAllPublicBroadcasts() {
+        viewModelScope.launch {
+            protocolEngine.deleteAllPublicBroadcasts()
+        }
+    }
 }
 
 class CrisisViewModelFactory : ViewModelProvider.Factory {

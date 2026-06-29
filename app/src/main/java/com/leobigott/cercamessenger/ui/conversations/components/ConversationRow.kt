@@ -12,6 +12,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -26,7 +27,7 @@ import com.leobigott.cercamessenger.core.model.Conversation
 import com.leobigott.cercamessenger.core.model.MessageStatus
 
 @Composable
-fun ConversationRow(conversation: Conversation, onClick: () -> Unit) {
+fun ConversationRow(conversation: Conversation, onClick: () -> Unit, onDelete: () -> Unit) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -52,6 +53,9 @@ fun ConversationRow(conversation: Conversation, onClick: () -> Unit) {
             }
             if (conversation.unreadCount > 0) {
                 Badge(containerColor = CercaColors.Primary) { Text(conversation.unreadCount.toString(), color = Color.Black) }
+            }
+            OutlinedButton(onClick = onDelete) {
+                Text("Eliminar")
             }
         }
     }

@@ -61,6 +61,7 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 import com.leobigott.cercamessenger.notifications.CercaNotificationHelper
 import com.google.android.gms.common.api.ApiException
+import com.leobigott.cercamessenger.data.local.DeletedMessageEntity
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -910,8 +911,15 @@ class NearbyProtocolEngine(
         envelope: CercaEnvelope,
         incoming: CercaMessagePayload
     ) {
+        database.messageDao().deleteExpiredPublicBroadcasts(System.currentTimeMillis(), DestinationScope.PUBLIC_BROADCAST.name)
+
         val isIncomingPublicBroadcast =
             incoming.destinationScope == DestinationScope.PUBLIC_BROADCAST.name
+
+        if (database.deletedMessageDao().isDeleted(incoming.id)) {
+            Log.d(TAG, "Ignoring locally deleted message=${incoming.id}")
+            return
+        }
 
         /*
          * Los broadcast no usan ACK global. Si ya lo tengo, simplemente no lo guardo
@@ -1597,5 +1605,63 @@ class NearbyProtocolEngine(
         }
 
         tryForwardAll()
+    }
+
+    override suspend fun deleteMessage(messageId: String) {
+        database.deletedMessageDao().upsert(
+            DeletedMessageEntity(
+                messageId = messageId,
+                deletedAt = System.currentTimeMillis(),
+                reason = "manual_delete"
+            )
+        )
+        database.messageDao().deleteMessageById(messageId)
+    }
+
+    override suspend fun deletePublicBroadcast(messageId: String) {
+        database.deletedMessageDao().upsert(
+            DeletedMessageEntity(
+                messageId = messageId,
+                deletedAt = System.currentTimeMillis(),
+                reason = "public_broadcast_delete"
+            )
+        )
+        database.messageDao().deleteMessageById(messageId)
+    }
+
+    override suspend fun deleteAllPublicBroadcasts() {
+        val ids = database.messageDao().getPublicBroadcastIds(
+            CrisisConstants.PUBLIC_BROADCAST_CONVERSATION_ID
+        )
+
+        ids.forEach { id ->
+            database.deletedMessageDao().upsert(
+                DeletedMessageEntity(
+                    messageId = id,
+                    deletedAt = System.currentTimeMillis(),
+                    reason = "public_broadcast_bulk_delete"
+                )
+            )
+        }
+
+        database.messageDao().deleteAllPublicBroadcasts(
+            CrisisConstants.PUBLIC_BROADCAST_CONVERSATION_ID
+        )
+    }
+
+    override suspend fun deleteConversation(conversationId: String) {
+        val ids = database.messageDao().getMessageIdsByConversation(conversationId)
+
+        ids.forEach { id ->
+            database.deletedMessageDao().upsert(
+                DeletedMessageEntity(
+                    messageId = id,
+                    deletedAt = System.currentTimeMillis(),
+                    reason = "conversation_delete"
+                )
+            )
+        }
+
+        database.messageDao().deleteConversation(conversationId)
     }
 }

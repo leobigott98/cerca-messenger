@@ -61,7 +61,11 @@ fun ConversationsScreen(
             }
             item { Text("Conversations") }
             items(state.conversations) { conversation ->
-                ConversationRow(conversation = conversation, onClick = { onOpenChat(conversation) })
+                ConversationRow(
+                    conversation = conversation,
+                    onClick = { onOpenChat(conversation) },
+                    onDelete = { viewModel.deleteConversation(conversation.id) }
+                )
             }
         }
     }

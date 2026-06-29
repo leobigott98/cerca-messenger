@@ -12,6 +12,7 @@ import com.leobigott.cercamessenger.data.local.DtnMessageEntity
 import kotlinx.coroutines.tasks.await
 import android.util.Log
 import java.util.Date
+import com.leobigott.cercamessenger.protocol.crypto.ContactCrypto
 
 /**
  * Cloud bridge for CERCA.
@@ -23,6 +24,7 @@ import java.util.Date
 class FirebaseCloudSyncService(
     private val database: CercaDatabase,
     private val localNodeId: String,
+    private val crypto: ContactCrypto = ContactCrypto(),
     private val firestore: FirebaseFirestore = FirebaseFirestore.getInstance(),
     private val auth: FirebaseAuth = FirebaseAuth.getInstance()
 ) : CloudSyncService {
@@ -98,6 +100,7 @@ class FirebaseCloudSyncService(
 
     private suspend fun downloadActiveCrisisReports() {
         val now = System.currentTimeMillis()
+
         val snapshot = firestore.collection("crisis_reports")
             .whereGreaterThan("ttlExpiresAt", now)
             .limit(250)
@@ -109,6 +112,7 @@ class FirebaseCloudSyncService(
             if (doc.id in localExisting) return@mapNotNull null
             val senderId = doc.getString("senderId") ?: return@mapNotNull null
             if (senderId == localNodeId) return@mapNotNull null
+            if (database.deletedMessageDao().isDeleted(doc.id)) return@mapNotNull null
             DtnMessageEntity(
                 id = doc.id,
                 conversationId = doc.getString("conversationId") ?: CrisisConstants.CRISIS_CONVERSATION_ID,
@@ -151,6 +155,8 @@ class FirebaseCloudSyncService(
             .get()
             .await()
 
+        Log.d(TAG, "downloadActiveDtnMessages snapshot=${snapshot.size()}")
+
         val localExisting = database.messageDao().getBufferMessageIds().toSet()
 
         val downloaded = snapshot.documents.mapNotNull { doc ->
@@ -160,15 +166,45 @@ class FirebaseCloudSyncService(
             if (senderId == localNodeId) return@mapNotNull null
 
             val destinationId = doc.getString("destinationId") ?: return@mapNotNull null
+            val encryptedBodyJson = doc.getString("encryptedBodyJson")
+            val isEncrypted = doc.getBoolean("isEncrypted") ?: true
+            val isForMe = destinationId == localNodeId
+
+            val conversationId = cloudConversationIdForDirectMessage(
+                senderId = senderId,
+                destinationId = destinationId
+            )
+
+            val displayText = when {
+                isForMe && isEncrypted && encryptedBodyJson != null -> {
+                    runCatching { crypto.decryptJson(encryptedBodyJson) }
+                        .onFailure { error ->
+                            Log.e(
+                                TAG,
+                                "Failed to decrypt cloud message id=${doc.id}: ${error.message}",
+                                error
+                            )
+                        }
+                        .getOrElse { "Unable to decrypt message." }
+                }
+
+                isForMe -> {
+                    doc.getString("text") ?: "Message"
+                }
+
+                else -> {
+                    "Encrypted relay message"
+                }
+            }
 
             DtnMessageEntity(
                 id = doc.id,
-                conversationId = doc.getString("conversationId") ?: "conv-$destinationId",
+                conversationId = conversationId,
                 senderId = senderId,
                 destinationId = destinationId,
-                text = doc.getString("text") ?: "Encrypted relay message",
-                encryptedBodyJson = doc.getString("encryptedBodyJson"),
-                isEncrypted = doc.getBoolean("isEncrypted") ?: true,
+                text = displayText,
+                encryptedBodyJson = encryptedBodyJson,
+                isEncrypted = isEncrypted,
                 timestamp = doc.getLong("timestamp") ?: now,
                 receivedAt = now,
                 ttlExpiresAt = doc.getLong("ttlExpiresAt") ?: (now + 24 * 60 * 60 * 1000L),
@@ -181,8 +217,16 @@ class FirebaseCloudSyncService(
                 peopleAffected = doc.getLong("peopleAffected")?.toInt(),
                 requiresResponse = doc.getBoolean("requiresResponse") ?: false,
                 destinationScope = doc.getString("destinationScope") ?: DestinationScope.DIRECT_CONTACT.name,
-                status = MessageStatus.RELAYED.name,
-                copiesLeft = (doc.getLong("copiesLeft") ?: 8L).toInt(),
+                status = if (isForMe) {
+                    MessageStatus.DELIVERED.name
+                } else {
+                    MessageStatus.RELAYED.name
+                },
+                copiesLeft = if (isForMe) {
+                    0
+                } else {
+                    (doc.getLong("copiesLeft") ?: 8L).toInt()
+                },
                 hopCount = (doc.getLong("hopCount") ?: 0L).toInt(),
                 pathCsv = doc.getString("pathCsv") ?: senderId,
                 bestRelayName = "Firebase gateway",
@@ -194,6 +238,21 @@ class FirebaseCloudSyncService(
         if (downloaded.isNotEmpty()) {
             database.messageDao().upsertAll(downloaded)
         }
+
+        Log.d(TAG, "downloadActiveDtnMessages inserted=${downloaded.size}")
+    }
+
+    private fun cloudConversationIdForDirectMessage(
+        senderId: String,
+        destinationId: String
+    ): String {
+        val otherParticipantId = if (destinationId == localNodeId) {
+            senderId
+        } else {
+            destinationId
+        }
+
+        return "conv-$otherParticipantId"
     }
 
     private fun DtnMessageEntity.toFirestoreMap(localNodeId: String): Map<String, Any?> = mapOf(

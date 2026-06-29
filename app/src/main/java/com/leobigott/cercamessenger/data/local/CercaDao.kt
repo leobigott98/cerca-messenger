@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import com.leobigott.cercamessenger.core.model.CrisisConstants
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -165,6 +166,20 @@ interface DtnMessageDao {
     """)
     suspend fun getUnsyncedCloudMessages(now: Long = System.currentTimeMillis()): List<DtnMessageEntity>
 
+    @Query("""
+    DELETE FROM dtn_messages
+    WHERE ttlExpiresAt <= :now
+      AND (
+        conversationId = :publicBroadcastConversationId
+        OR destinationScope = 'PUBLIC_BROADCAST'
+        OR crisisType = 'PUBLIC_BROADCAST'
+      )
+""")
+    suspend fun deleteExpiredPublicBroadcasts(
+        now: Long,
+        publicBroadcastConversationId: String
+    )
+
     @Query("UPDATE dtn_messages SET syncedToCloud = 1 WHERE id = :messageId")
     suspend fun markSyncedToCloud(messageId: String)
 
@@ -176,6 +191,32 @@ interface DtnMessageDao {
 
     @Query("DELETE FROM dtn_messages")
     suspend fun deleteAllMessages()
+
+    @Query("DELETE FROM dtn_messages WHERE id = :messageId")
+    suspend fun deleteMessageById(messageId: String)
+
+    @Query("""
+    DELETE FROM dtn_messages 
+    WHERE conversationId = :publicBroadcastConversationId
+       OR destinationScope = 'PUBLIC_BROADCAST'
+       OR crisisType = 'PUBLIC_BROADCAST'
+""")
+    suspend fun deleteAllPublicBroadcasts(
+        publicBroadcastConversationId: String = CrisisConstants.PUBLIC_BROADCAST_CONVERSATION_ID
+    )
+
+    @Query("""
+    SELECT id FROM dtn_messages
+    WHERE conversationId = :publicBroadcastConversationId
+       OR destinationScope = 'PUBLIC_BROADCAST'
+       OR crisisType = 'PUBLIC_BROADCAST'
+""")
+    suspend fun getPublicBroadcastIds(
+        publicBroadcastConversationId: String = CrisisConstants.PUBLIC_BROADCAST_CONVERSATION_ID
+    ): List<String>
+
+    @Query("SELECT id FROM dtn_messages WHERE conversationId = :conversationId")
+    suspend fun getMessageIdsByConversation(conversationId: String): List<String>
 }
 
 
@@ -277,4 +318,16 @@ interface PredictionDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(prediction: PredictionEntity)
+}
+
+@Dao
+interface DeletedMessageDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: DeletedMessageEntity)
+
+    @Query("SELECT EXISTS(SELECT 1 FROM deleted_messages WHERE messageId = :messageId)")
+    suspend fun isDeleted(messageId: String): Boolean
+
+    @Query("DELETE FROM deleted_messages WHERE deletedAt < :cutoff")
+    suspend fun pruneOlderThan(cutoff: Long)
 }

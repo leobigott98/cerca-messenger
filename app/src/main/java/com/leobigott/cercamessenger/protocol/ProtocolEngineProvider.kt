@@ -5,10 +5,12 @@ import android.os.Build
 import com.leobigott.cercamessenger.data.local.CercaDatabase
 import com.leobigott.cercamessenger.protocol.nearby.NearbyProtocolEngine
 import com.leobigott.cercamessenger.protocol.cloud.FirebaseCloudSyncService
+import com.leobigott.cercamessenger.protocol.crypto.ContactCrypto
 
 object ProtocolEngineProvider {
     @Volatile
     private var engineInstance: ProtocolEngine? = null
+    val crypto = ContactCrypto()
 
     fun init(context: Context) {
         if (engineInstance != null) return
@@ -22,7 +24,12 @@ object ProtocolEngineProvider {
                     database = database,
                     localNodeId = nodeId,
                     displayName = "${Build.MODEL ?: "CERCA Android"}|$nodeId",
-                    cloudSyncService = FirebaseCloudSyncService(database, nodeId)
+                    crypto = crypto,
+                    cloudSyncService = FirebaseCloudSyncService(
+                        database = database,
+                        localNodeId = nodeId,
+                        crypto = crypto
+                    )
                 )
             }
         }

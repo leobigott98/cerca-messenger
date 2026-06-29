@@ -145,25 +145,67 @@ fun CrisisScreen(
                 }
             }
             item {
-                    Text(strings.publicAnnouncements, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
-                 }
-            items(state.publicBroadcasts, key = { it.id }) { report -> CrisisReportCard(report, strings) }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            strings.publicAnnouncements,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                        )
+
+                        Button(
+                            onClick = viewModel::deleteAllPublicBroadcasts,
+                            enabled = state.publicBroadcasts.isNotEmpty()
+                        ) {
+                            Text("Eliminar todos")
+                        }
+                    }
+            }
+            items(state.publicBroadcasts, key = { it.id }) { report ->
+                CrisisReportCard(
+                    report = report,
+                    strings = strings,
+                    onDelete = { viewModel.deletePublicBroadcast(report.id) }
+                )
+            }
             item {
                     Text(strings.transportedReports, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp, bottom = 4.dp))
                 }
-            items(state.reports, key = { it.id }) { report -> CrisisReportCard(report, strings) }
+            items(state.reports, key = { it.id }) { report ->
+                CrisisReportCard(
+                    report = report,
+                    strings = strings,
+                    onDelete = { viewModel.deletePublicBroadcast(report.id) }
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun CrisisReportCard(report: OfflineMessage, strings: Strings) {
+private fun CrisisReportCard(
+    report: OfflineMessage,
+    strings: Strings,
+    onDelete: (() -> Unit)? = null
+) {
     Card(modifier = Modifier.fillMaxWidth().clickable { }) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
             Text(report.crisisType.label, fontWeight = FontWeight.Bold)
             Text(formatReportTime(report.timestamp))
             Text(report.text)
             Text("${strings.hops}: ${report.hopCount} · ${strings.copies}: ${report.copiesLeft} · ${strings.status}: ${report.status}")
+
+            if (onDelete != null) {
+                Button(onClick = onDelete) {
+                    Text("Eliminar")
+                }
+            }
         }
     }
 }
