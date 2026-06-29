@@ -61,6 +61,7 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 import com.leobigott.cercamessenger.notifications.CercaNotificationHelper
 import com.google.android.gms.common.api.ApiException
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicBoolean
 
 class NearbyProtocolEngine(
@@ -76,6 +77,8 @@ class NearbyProtocolEngine(
     private companion object {
         private const val TAG = "CERCA_Nearby"
     }
+
+    private val nearbyOperationMutex = kotlinx.coroutines.sync.Mutex()
 
     private val client: ConnectionsClient = Nearby.getConnectionsClient(context)
     private val router = CercaRouterEngine(config)
@@ -340,11 +343,13 @@ class NearbyProtocolEngine(
         }
 
 // Firebase queda en segundo plano.
-        scope.launch {
-            runCatching { cloudSyncService.syncNow() }
-                .onFailure { error ->
-                    Log.e(TAG, "cloudSync after sendMessage failed: ${error.message}", error)
-                }
+        if (statusProvider.hasInternet()) {
+            scope.launch {
+                runCatching { cloudSyncService.syncNow() }
+                    .onFailure { error ->
+                        Log.e(TAG, "cloudSync after sendMessage failed: ${error.message}", error)
+                    }
+            }
         }
     }
 
@@ -529,7 +534,7 @@ class NearbyProtocolEngine(
     }
 
     @SuppressLint("MissingPermission")
-    override suspend fun refreshNearby() {
+    override suspend fun refreshNearby() = nearbyOperationMutex.withLock {
         if (!hasNearbyPermissions()) {
             Log.e(TAG, "refreshNearby aborted: missing Nearby permissions")
             return
@@ -549,14 +554,14 @@ class NearbyProtocolEngine(
         // 2) Intentar arrancar advertising/discovery si no están activos.
         startDiscovery()
 
-        // 3) Intentar reenviar mensajes pendientes.
-        tryForwardAll()
-
-        // 4) Si hay internet, sincronizar nube y volver a intentar forwarding.
-        if (statusProvider.hasInternet()) {
-            cloudSyncService.syncNow()
-            tryForwardAll()
-        }
+//        // 3) Intentar reenviar mensajes pendientes.
+//        tryForwardAll()
+//
+//        // 4) Si hay internet, sincronizar nube y volver a intentar forwarding.
+//        if (statusProvider.hasInternet()) {
+//            cloudSyncService.syncNow()
+//            tryForwardAll()
+//        }
     }
 
     @SuppressLint("MissingPermission")
@@ -913,10 +918,35 @@ class NearbyProtocolEngine(
          * ni lo notifico otra vez.
          */
         val existing = database.messageDao().getById(incoming.id)
+
         if (existing != null) {
             if (!isIncomingPublicBroadcast && incoming.destinationId == localNodeId) {
+                val displayText = if (incoming.isEncrypted && incoming.encryptedBodyJson != null) {
+                    runCatching { crypto.decryptJson(incoming.encryptedBodyJson) }
+                        .getOrElse { "Unable to decrypt message." }
+                } else {
+                    incoming.text
+                }
+
+                database.messageDao().upsert(
+                    existing.copy(
+                        text = displayText,
+                        encryptedBodyJson = incoming.encryptedBodyJson,
+                        isEncrypted = incoming.isEncrypted,
+                        status = MessageStatus.DELIVERED.name,
+                        copiesLeft = 0,
+                        receivedAt = System.currentTimeMillis()
+                    )
+                )
+
                 sendAck(endpointId, incoming.id, localNodeId)
+
+                scope.launch {
+                    kotlinx.coroutines.delay(500)
+                    sendAck(endpointId, incoming.id, localNodeId)
+                }
             }
+
             return
         }
 
@@ -1010,6 +1040,11 @@ class NearbyProtocolEngine(
 
             database.ackDao().upsert(ack)
             sendAck(endpointId, received.id, localNodeId)
+
+            scope.launch {
+                kotlinx.coroutines.delay(500)
+                sendAck(endpointId, received.id, localNodeId)
+            }
 
             return
         }
@@ -1223,6 +1258,11 @@ class NearbyProtocolEngine(
         for (message in messages) {
             if (database.ackDao().hasAck(message.id)) continue
             if (message.ttlExpiresAt <= System.currentTimeMillis()) continue
+
+            if (message.copiesLeft <= 0) {
+                Log.d(TAG, "tryForwardAll skip message=${message.id}: copiesLeft=${message.copiesLeft}")
+                continue
+            }
 
             val payload = message.toPayload()
 
@@ -1520,5 +1560,42 @@ class NearbyProtocolEngine(
         } else {
             Log.e(TAG, "restartNearby aborted: missing permissions")
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    override suspend fun forceNearbyScan() = nearbyOperationMutex.withLock {
+        if (!hasNearbyPermissions()) {
+            Log.e(TAG, "forceNearbyScan aborted: missing Nearby permissions")
+            return
+        }
+
+        Log.d(
+            TAG,
+            "forceNearbyScan called. connected=${connectedEndpoints.size}, connecting=${connectingEndpoints.size}"
+        )
+
+        /*
+         * Importante:
+         * No usamos stopAllEndpoints() aquí, porque eso tumbaría conexiones sanas.
+         * Solo reiniciamos advertising/discovery para forzar un nuevo escaneo.
+         */
+        advertisingRunning = false
+        discoveryRunning = false
+        advertisingStarting.set(false)
+        discoveryStarting.set(false)
+
+        runCatching { client.stopDiscovery() }
+        runCatching { client.stopAdvertising() }
+
+        kotlinx.coroutines.delay(500)
+
+        startDiscovery()
+
+        connectedEndpoints.toList().forEach { endpointId ->
+            sendHello(endpointId)
+            sendSummary(endpointId)
+        }
+
+        tryForwardAll()
     }
 }

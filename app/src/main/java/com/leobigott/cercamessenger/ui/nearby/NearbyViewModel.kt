@@ -41,7 +41,7 @@ class NearbyViewModel(
             }
 
             runCatching {
-                protocolEngine.refreshNearby()
+                protocolEngine.forceNearbyScan()
             }.onSuccess {
                 _uiState.update {
                     it.copy(isRefreshing = false, lastActionMessage = "Búsqueda de nodos solicitada.")

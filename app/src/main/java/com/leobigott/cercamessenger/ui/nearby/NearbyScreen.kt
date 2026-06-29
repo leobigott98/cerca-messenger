@@ -1,5 +1,6 @@
 package com.leobigott.cercamessenger.ui.nearby
 
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,7 +20,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.leobigott.cercamessenger.core.design.components.StatusCard
 import com.leobigott.cercamessenger.core.model.DeviceNode
 import com.leobigott.cercamessenger.ui.nearby.components.DeviceNodeCard
 import com.leobigott.cercamessenger.core.model.LocalizationStore
@@ -27,6 +27,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.platform.LocalContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -38,6 +39,7 @@ fun NearbyScreen(
     val state by viewModel.uiState.collectAsState()
     val language by LocalizationStore.language.collectAsState()
     val strings = LocalizationStore.strings(language)
+    val context = LocalContext.current
 
     Scaffold(
         topBar = {
@@ -71,12 +73,7 @@ fun NearbyScreen(
             }
 
             state.lastActionMessage?.let { message ->
-                item {
-                    StatusCard(
-                        title = "Nearby",
-                        subtitle = message
-                    )
-                }
+                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
             }
             items(state.devices) { device ->
                 DeviceNodeCard(device = device)

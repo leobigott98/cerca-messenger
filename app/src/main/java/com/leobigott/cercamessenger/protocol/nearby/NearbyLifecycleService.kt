@@ -51,6 +51,13 @@ class NearbyLifecycleService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         ensureNearbyStarted()
+
+        scope.launch {
+            ProtocolEngineProvider.engine.startDiscovery()
+            delay(2000)
+            ProtocolEngineProvider.engine.startDiscovery()
+        }
+
         return START_STICKY
     }
 

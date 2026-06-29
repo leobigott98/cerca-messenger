@@ -46,21 +46,54 @@ class FirebaseCloudSyncService(
     }
 
     private suspend fun uploadUnsyncedMessages() {
+        val now = System.currentTimeMillis()
         val unsynced = database.messageDao().getUnsyncedCloudMessages()
 
+        Log.d(TAG, "uploadUnsyncedMessages candidates=${unsynced.size}")
+
         unsynced.forEach { message ->
+            if (message.ttlExpiresAt <= now) {
+                Log.d(
+                    TAG,
+                    "Skipping expired cloud message id=${message.id} scope=${message.destinationScope} ttl=${message.ttlExpiresAt} now=$now"
+                )
+                return@forEach
+            }
+
             val collection = when (message.destinationScope) {
                 DestinationScope.PUBLIC_BROADCAST.name,
                 DestinationScope.CRISIS_GATEWAY.name -> "crisis_reports"
                 else -> "dtn_messages"
             }
-            val doc = firestore.collection(collection).document(message.id)
 
-            doc.set(message.toFirestoreMap(localNodeId), SetOptions.merge()).await()
+            val data = message.toFirestoreMap(localNodeId)
 
-            database.messageDao().markSyncedToCloud(message.id)
+            Log.d(
+                TAG,
+                "Uploading cloud message id=${message.id} collection=$collection " +
+                        "scope=${message.destinationScope} sender=${message.senderId} " +
+                        "destination=${message.destinationId} encrypted=${message.isEncrypted} " +
+                        "ttl=${message.ttlExpiresAt} auth=${auth.currentUser?.uid != null}"
+            )
+
+            runCatching {
+                firestore.collection(collection)
+                    .document(message.id)
+                    .set(data, SetOptions.merge())
+                    .await()
+
+                database.messageDao().markSyncedToCloud(message.id)
+
+                Log.d(TAG, "Cloud upload SUCCESS id=${message.id} collection=$collection")
+            }.onFailure { error ->
+                Log.e(
+                    TAG,
+                    "Cloud upload FAILED id=${message.id} collection=$collection " +
+                            "scope=${message.destinationScope} error=${error.message}",
+                    error
+                )
+            }
         }
-        Log.d(TAG, "uploadUnsyncedMessages count=${unsynced.size}")
     }
 
     private suspend fun downloadActiveCrisisReports() {
