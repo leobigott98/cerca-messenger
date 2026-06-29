@@ -11,6 +11,7 @@ import com.leobigott.cercamessenger.data.local.CercaDatabase
 import com.leobigott.cercamessenger.data.local.DtnMessageEntity
 import kotlinx.coroutines.tasks.await
 import android.util.Log
+import java.util.Date
 
 /**
  * Cloud bridge for CERCA.
@@ -140,9 +141,9 @@ class FirebaseCloudSyncService(
                 ttlExpiresAt = doc.getLong("ttlExpiresAt") ?: (now + 24 * 60 * 60 * 1000L),
                 isFromMe = false,
                 isEmergency = doc.getBoolean("isEmergency") ?: false,
-                crisisType = doc.getString("crisisType")!!,
+                crisisType = doc.getString("crisisType") ?: "DIRECT_MESSAGE",
                 crisisPriority = (doc.getLong("crisisPriority") ?: 1L).toInt(),
-                verificationStatus = doc.getString("verificationStatus")!!,
+                verificationStatus = doc.getString("verificationStatus") ?: "UNVERIFIED",
                 approximateLocation = doc.getString("approximateLocation"),
                 peopleAffected = doc.getLong("peopleAffected")?.toInt(),
                 requiresResponse = doc.getBoolean("requiresResponse") ?: false,
@@ -168,7 +169,7 @@ class FirebaseCloudSyncService(
         "senderId" to senderId,
         "uploadedByNodeId" to localNodeId,
         "destinationId" to destinationId,
-        "text" to text,
+        "text" to if (isEncrypted) "Encrypted message" else text,
         "encryptedBodyJson" to encryptedBodyJson,
         "isEncrypted" to isEncrypted,
         "timestamp" to timestamp,
@@ -185,7 +186,8 @@ class FirebaseCloudSyncService(
         "copiesLeft" to copiesLeft,
         "hopCount" to hopCount,
         "pathCsv" to pathCsv,
-        "createdAt" to Timestamp.now(),
+        "createdAt" to Timestamp(Date(timestamp)),
+        "updatedAt" to Timestamp.now(),
         "source" to "android-cerca"
     )
 }
