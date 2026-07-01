@@ -146,6 +146,19 @@ class FirebaseCloudSyncService(
         Log.d(TAG, "downloadActiveCrisisReports count=${downloaded.size}")
     }
 
+    private fun localDirectConversationId(
+        senderId: String,
+        destinationId: String
+    ): String {
+        val otherParticipantId = if (senderId == localNodeId) {
+            destinationId
+        } else {
+            senderId
+        }
+
+        return "conv-$otherParticipantId"
+    }
+
     private suspend fun downloadActiveDtnMessages() {
         val now = System.currentTimeMillis()
 
@@ -170,7 +183,7 @@ class FirebaseCloudSyncService(
             val isEncrypted = doc.getBoolean("isEncrypted") ?: true
             val isForMe = destinationId == localNodeId
 
-            val conversationId = cloudConversationIdForDirectMessage(
+            val conversationId = localDirectConversationId(
                 senderId = senderId,
                 destinationId = destinationId
             )
@@ -240,19 +253,6 @@ class FirebaseCloudSyncService(
         }
 
         Log.d(TAG, "downloadActiveDtnMessages inserted=${downloaded.size}")
-    }
-
-    private fun cloudConversationIdForDirectMessage(
-        senderId: String,
-        destinationId: String
-    ): String {
-        val otherParticipantId = if (destinationId == localNodeId) {
-            senderId
-        } else {
-            destinationId
-        }
-
-        return "conv-$otherParticipantId"
     }
 
     private fun DtnMessageEntity.toFirestoreMap(localNodeId: String): Map<String, Any?> = mapOf(

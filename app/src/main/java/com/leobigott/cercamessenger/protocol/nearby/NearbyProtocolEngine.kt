@@ -162,6 +162,19 @@ class NearbyProtocolEngine(
             }
     }
 
+    private fun localDirectConversationId(
+        senderId: String,
+        destinationId: String
+    ): String {
+        val otherParticipantId = if (senderId == localNodeId) {
+            destinationId
+        } else {
+            senderId
+        }
+
+        return "conv-$otherParticipantId"
+    }
+
     private suspend fun trySendDirectNow(message: DtnMessageEntity): Boolean {
         if (database.ackDao().hasAck(message.id)) return false
         if (message.ttlExpiresAt <= System.currentTimeMillis()) return false
@@ -274,7 +287,10 @@ class NearbyProtocolEngine(
             database.messageDao().upsert(
                 DtnMessageEntity(
                     id = "local-${UUID.randomUUID()}",
-                    conversationId = conversationId,
+                    conversationId = localDirectConversationId(
+                        senderId = localNodeId,
+                        destinationId = destinationId
+                    ),
                     senderId = localNodeId,
                     destinationId = destinationId,
                     text = "Add this contact by QR before sending encrypted messages.",
@@ -297,9 +313,14 @@ class NearbyProtocolEngine(
         }
 
         val encryptedJson = crypto.encryptTextToJson(text, contact.publicKeyPem)
+        val localConversationId = localDirectConversationId(
+            senderId = localNodeId,
+            destinationId = destinationId
+        )
+
         val message = DtnMessageEntity(
             id = "msg-${UUID.randomUUID()}",
-            conversationId = conversationId,
+            conversationId = localConversationId,
             senderId = localNodeId,
             destinationId = destinationId,
             text = text,
@@ -929,6 +950,11 @@ class NearbyProtocolEngine(
 
         if (existing != null) {
             if (!isIncomingPublicBroadcast && incoming.destinationId == localNodeId) {
+                val localConversationId = localDirectConversationId(
+                    senderId = incoming.senderId,
+                    destinationId = incoming.destinationId
+                )
+
                 val displayText = if (incoming.isEncrypted && incoming.encryptedBodyJson != null) {
                     runCatching { crypto.decryptJson(incoming.encryptedBodyJson) }
                         .getOrElse { "Unable to decrypt message." }
@@ -938,6 +964,7 @@ class NearbyProtocolEngine(
 
                 database.messageDao().upsert(
                     existing.copy(
+                        conversationId = localConversationId,
                         text = displayText,
                         encryptedBodyJson = incoming.encryptedBodyJson,
                         isEncrypted = incoming.isEncrypted,
@@ -1023,11 +1050,18 @@ class NearbyProtocolEngine(
                 received.text
             }
 
+            val localConversationId = localDirectConversationId(
+                senderId = received.senderId,
+                destinationId = received.destinationId
+            )
+
             database.messageDao().upsert(
                 received.toEntity(localNodeId).copy(
+                    conversationId = localConversationId,
                     text = displayText,
                     status = MessageStatus.DELIVERED.name,
-                    copiesLeft = 0
+                    copiesLeft = 0,
+                    receivedAt = System.currentTimeMillis()
                 )
             )
 
