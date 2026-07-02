@@ -170,7 +170,7 @@ class FirebaseCloudSyncService(
 
         Log.d(TAG, "downloadActiveDtnMessages snapshot=${snapshot.size()}")
 
-        val localExisting = database.messageDao().getBufferMessageIds().toSet()
+        val localExisting = database.messageDao().getAllMessageIds().toSet()
 
         val downloaded = snapshot.documents.mapNotNull { doc ->
             if (doc.id in localExisting) return@mapNotNull null

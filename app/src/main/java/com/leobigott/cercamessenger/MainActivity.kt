@@ -33,6 +33,11 @@ import com.leobigott.cercamessenger.core.design.theme.CercaMessengerTheme
 import com.leobigott.cercamessenger.protocol.ProtocolEngineProvider
 import com.leobigott.cercamessenger.protocol.nearby.NearbyLifecycleService
 import com.leobigott.cercamessenger.settings.CercaSettingsStore
+import android.net.Uri
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 
 class MainActivity : ComponentActivity() {
 
@@ -91,7 +96,37 @@ private fun PermissionGate(content: @Composable () -> Unit) {
         }
     }
 
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                granted = requiredPermissions.all { permission ->
+                    ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+                }
+            }
+        }
+
+        lifecycleOwner.lifecycle.addObserver(observer)
+
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    fun openAppSettings() {
+        val intent = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.fromParts("package", context.packageName, null)
+        )
+        context.startActivity(intent)
+    }
+
     LaunchedEffect(Unit) {
+        granted = requiredPermissions.all { permission ->
+            ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+        }
+
         if (!granted) {
             launcher.launch(allRequestablePermissions)
         }
@@ -130,6 +165,13 @@ private fun PermissionGate(content: @Composable () -> Unit) {
                 modifier = Modifier.padding(top = 16.dp)
             ) {
                 Text("Conceder permisos")
+            }
+
+            Button(
+                onClick = { openAppSettings() },
+                modifier = Modifier.padding(top = 8.dp)
+            ) {
+                Text("Abrir ajustes de la app")
             }
 
             Button(

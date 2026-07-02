@@ -574,7 +574,9 @@ class NearbyProtocolEngine(
         }
 
         // 2) Intentar arrancar advertising/discovery si no están activos.
-        startDiscovery()
+        if (!advertisingRunning || !discoveryRunning) {
+            startDiscovery()
+        }
 
 //        // 3) Intentar reenviar mensajes pendientes.
 //        tryForwardAll()
@@ -596,8 +598,6 @@ class NearbyProtocolEngine(
             discoveryStarting.set(false)
             return
         }
-
-        refreshLocalInternetState()
 
         Log.d(
             TAG,

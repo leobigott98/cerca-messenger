@@ -2,6 +2,7 @@ package com.leobigott.cercamessenger.ui.settings
 
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -33,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -109,7 +111,6 @@ fun SettingsScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            //item { StatusCard(title = strings.activeCrisis, subtitle = strings.activeCrisisDescription) }
             item {
                 ListItem(
                     headlineContent = { Text(strings.language) },
@@ -119,13 +120,13 @@ fun SettingsScreen(
                 )
             }
             item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 0.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AppLanguage.values().forEach { option ->
+                        if (option == AppLanguage.DE) return@forEach
                         FilterChip(
                             selected = language == option,
                             onClick = { LocalizationStore.setLanguage(context, option) },
-                            label = { Text(option.label) },
-                            modifier = Modifier.padding(bottom = 16.dp)
+                            label = { Text(option.label)},
                         )
                     }
                 }
@@ -135,22 +136,28 @@ fun SettingsScreen(
                     headlineContent = { Text("Frecuencia de búsqueda") },
                     supportingContent = {
                         Text("Menor intervalo = comunicación más rápida, pero mayor consumo de batería.")
-                    }
+                    },
+                    modifier = Modifier.padding(top = 0.dp)
                 )
             }
             item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CercaSettingsStore.allowedHeartbeatSeconds.forEach { seconds ->
-                        FilterChip(
-                            selected = heartbeatSeconds == seconds,
-                            onClick = {
-                                CercaSettingsStore.setHeartbeatSeconds(context, seconds)
-                                scope.launch {
-                                    engine.refreshNearby()
-                                }
-                            },
-                            label = { Text("${seconds}s") }
-                        )
+                Column(){
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        CercaSettingsStore.allowedHeartbeatSeconds.forEach { seconds ->
+                            FilterChip(
+                                selected = heartbeatSeconds == seconds,
+                                onClick = {
+                                    CercaSettingsStore.setHeartbeatSeconds(context, seconds)
+                                    scope.launch {
+                                        engine.refreshNearby()
+                                    }
+                                },
+                                label = { Text("${seconds}s") }
+                            )
+                        }
+                    }
+                    if (heartbeatSeconds == 1 || heartbeatSeconds == 5){
+                        Text("Intervalos cortos mejoran la detección, pero pueden consumir más batería.", modifier = Modifier.padding(top = 8.dp), color = Color.Magenta)
                     }
                 }
             }
@@ -200,8 +207,8 @@ fun SettingsScreen(
                     trailingContent = { OutlinedButton(onClick = { confirmDeleteContacts = true }) { Text(strings.delete) } }
                 )
             }
-            item { ListItem(headlineContent = { Text("About") }, supportingContent = { Text("Proyecto elaborado por estudiantes de la UNIMET. Prototipo funcional. Versión 1.0.0") }) }
-            item { ListItem(headlineContent = { Text("Contacto") }, supportingContent = { Text("leonardo.bigott@correo.unimet.edu.ve, patricia.perez@correo.unimet.edu.ve") }) }
+            item { ListItem(headlineContent = { Text("About") }, supportingContent = { Text("Proyecto elaborado por estudiantes de la UNIMET. Prototipo funcional. Versión 0.3.0") }) }
+            item { ListItem(headlineContent = { Text("Contacto") }, supportingContent = { Text("cerca-messenger.vercel.app, cerca@lab58.dev") }) }
         }
     }
 }

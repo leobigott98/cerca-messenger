@@ -42,7 +42,7 @@ interface DtnMessageDao {
         senderId = :localNodeId
         OR destinationId = :localNodeId
     )
-    ORDER BY receivedAt ASC, timestamp ASC, id ASC
+    ORDER BY timestamp ASC, receivedAt ASC, id ASC
 """)
     fun observeConversation(
         conversationId: String,
@@ -57,6 +57,9 @@ interface DtnMessageDao {
 
     @Query("SELECT id FROM dtn_messages WHERE status NOT IN ('DELIVERED', 'EXPIRED', 'FAILED')")
     suspend fun getBufferMessageIds(): List<String>
+
+    @Query("SELECT id FROM dtn_messages")
+    suspend fun getAllMessageIds(): List<String>
 
     @Query("""
     UPDATE dtn_messages
