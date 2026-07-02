@@ -63,6 +63,16 @@ interface DtnMessageDao {
 
     @Query("""
     UPDATE dtn_messages
+    SET status = 'DELIVERED',
+        copiesLeft = 0,
+        syncedToCloud = 1
+    WHERE id = :messageId
+      AND isFromMe = 1
+""")
+    suspend fun markDeliveredFromCloudAck(messageId: String)
+
+    @Query("""
+    UPDATE dtn_messages
     SET status = :newStatus,
     copiesLeft = CASE WHEN copiesLeft <= 0 THEN 1 ELSE copiesLeft END
     WHERE isFromMe = 1

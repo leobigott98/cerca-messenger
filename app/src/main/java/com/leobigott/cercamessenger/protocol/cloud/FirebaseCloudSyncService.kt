@@ -38,6 +38,7 @@ class FirebaseCloudSyncService(
         uploadUnsyncedMessages()
         downloadActiveCrisisReports()
         downloadActiveDtnMessages()
+        downloadDeliveryAcks()
         Log.d(TAG, "syncNow finished")
     }
 
@@ -92,13 +93,6 @@ class FirebaseCloudSyncService(
                 database.messageDao().markSyncedToCloud(message.id)
 
                 Log.d(TAG, "Cloud upload SUCCESS id=${message.id} collection=$collection")
-            }.onFailure { error ->
-                Log.e(
-                    TAG,
-                    "Cloud upload FAILED id=${message.id} collection=$collection " +
-                            "scope=${message.destinationScope} error=${error.message}",
-                    error
-                )
             }.onFailure { error ->
                 Log.e(
                     TAG,
@@ -171,6 +165,31 @@ class FirebaseCloudSyncService(
         return "conv-$otherParticipantId"
     }
 
+    private suspend fun downloadDeliveryAcks() {
+        val now = System.currentTimeMillis()
+
+        val snapshot = firestore.collection("dtn_acks")
+            .whereEqualTo("senderId", localNodeId)
+            .whereGreaterThan("ttlExpiresAt", now)
+            .limit(250)
+            .get()
+            .await()
+
+        Log.d(TAG, "downloadDeliveryAcks snapshot=${snapshot.size()}")
+
+        snapshot.documents.forEach { doc ->
+            val messageId = doc.getString("messageId") ?: return@forEach
+            val ackedByNodeId = doc.getString("ackedByNodeId") ?: return@forEach
+
+            database.messageDao().markDeliveredFromCloudAck(messageId)
+
+            Log.d(
+                TAG,
+                "Message marked DELIVERED from cloud ACK messageId=$messageId ackedBy=$ackedByNodeId"
+            )
+        }
+    }
+
     private suspend fun downloadActiveDtnMessages() {
         val now = System.currentTimeMillis()
 
@@ -194,6 +213,15 @@ class FirebaseCloudSyncService(
             val encryptedBodyJson = doc.getString("encryptedBodyJson")
             val isEncrypted = doc.getBoolean("isEncrypted") ?: true
             val isForMe = destinationId == localNodeId
+
+            if (isForMe) {
+                uploadDeliveryAck(
+                    messageId = doc.id,
+                    senderId = senderId,
+                    destinationId = destinationId,
+                    ttlExpiresAt = doc.getLong("ttlExpiresAt") ?: (now + 24 * 60 * 60 * 1000L)
+                )
+            }
 
             val conversationId = localDirectConversationId(
                 senderId = senderId,
@@ -265,6 +293,48 @@ class FirebaseCloudSyncService(
         }
 
         Log.d(TAG, "downloadActiveDtnMessages inserted=${downloaded.size}")
+    }
+
+    private suspend fun uploadDeliveryAck(
+        messageId: String,
+        senderId: String,
+        destinationId: String,
+        ttlExpiresAt: Long
+    ) {
+        if (destinationId != localNodeId) return
+
+        val now = System.currentTimeMillis()
+        val ackId = "${messageId}_$localNodeId"
+
+        val data = mapOf(
+            "id" to ackId,
+            "messageId" to messageId,
+            "senderId" to senderId,
+            "destinationId" to destinationId,
+            "ackedByNodeId" to localNodeId,
+            "timestamp" to now,
+            "ttlExpiresAt" to ttlExpiresAt,
+            "createdAt" to Timestamp.now(),
+            "source" to "android-cerca"
+        )
+
+        runCatching {
+            firestore.collection("dtn_acks")
+                .document(ackId)
+                .set(data, SetOptions.merge())
+                .await()
+
+            Log.d(
+                TAG,
+                "Cloud ACK uploaded ackId=$ackId messageId=$messageId sender=$senderId destination=$destinationId"
+            )
+        }.onFailure { error ->
+            Log.e(
+                TAG,
+                "Cloud ACK upload FAILED ackId=$ackId messageId=$messageId error=${error.message}",
+                error
+            )
+        }
     }
 
     private fun DtnMessageEntity.toFirestoreMap(localNodeId: String): Map<String, Any?> = mapOf(
