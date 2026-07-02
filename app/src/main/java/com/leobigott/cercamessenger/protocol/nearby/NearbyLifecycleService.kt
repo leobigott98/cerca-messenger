@@ -150,24 +150,34 @@ class NearbyLifecycleService : Service() {
         }
     }
 
+    private fun requiredNearbyPermissions(): List<String> = buildList {
+        add(Manifest.permission.ACCESS_FINE_LOCATION)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            add(Manifest.permission.BLUETOOTH_SCAN)
+            add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        }
+    }
+
+    private fun missingNearbyPermissions(): List<String> {
+        return requiredNearbyPermissions().filter { permission ->
+            ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED
+        }
+    }
+
     private fun hasNearbyPermissions(): Boolean {
-        val permissions = buildList {
-            add(Manifest.permission.ACCESS_FINE_LOCATION)
+        val missing = missingNearbyPermissions()
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                add(Manifest.permission.BLUETOOTH_SCAN)
-                add(Manifest.permission.BLUETOOTH_ADVERTISE)
-                add(Manifest.permission.BLUETOOTH_CONNECT)
-            }
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                add(Manifest.permission.NEARBY_WIFI_DEVICES)
-            }
+        if (missing.isNotEmpty()) {
+            Log.e(TAG, "Missing Nearby permissions in service: ${missing.joinToString()}")
         }
 
-        return permissions.all { permission ->
-            ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
-        }
+        return missing.isEmpty()
     }
 
     private fun createNotificationChannel() {

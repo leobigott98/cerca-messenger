@@ -280,6 +280,31 @@ class NearbyProtocolEngine(
         return false
     }
 
+    private fun canActuallyUseNearby(): Boolean {
+        if (!hasNearbyPermissions()) return false
+
+        val bluetoothManager =
+            context.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
+        val bluetoothEnabled = bluetoothManager.adapter?.isEnabled == true
+
+        val wifiManager =
+            context.applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+        val wifiEnabled = wifiManager.isWifiEnabled
+
+        val locationManager =
+            context.getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+        val locationEnabled =
+            locationManager.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) ||
+                    locationManager.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)
+
+        Log.d(
+            TAG,
+            "Nearby preflight: bluetooth=$bluetoothEnabled wifi=$wifiEnabled location=$locationEnabled"
+        )
+
+        return bluetoothEnabled && wifiEnabled && locationEnabled
+    }
+
     override suspend fun sendMessage(conversationId: String, destinationId: String, text: String) {
         val now = System.currentTimeMillis()
         val contact = database.contactDao().getByNodeId(destinationId)
@@ -535,24 +560,32 @@ class NearbyProtocolEngine(
         }
     }
 
+    private fun requiredNearbyPermissions(): List<String> = buildList {
+        add(Manifest.permission.ACCESS_FINE_LOCATION)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            add(Manifest.permission.BLUETOOTH_SCAN)
+            add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        }
+    }
+
+    private fun missingNearbyPermissions(): List<String> {
+        return requiredNearbyPermissions().filter { permission ->
+            ContextCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED
+        }
+    }
+
     private fun hasNearbyPermissions(): Boolean {
-        val permissions = buildList {
-            add(Manifest.permission.ACCESS_FINE_LOCATION)
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                add(Manifest.permission.BLUETOOTH_SCAN)
-                add(Manifest.permission.BLUETOOTH_ADVERTISE)
-                add(Manifest.permission.BLUETOOTH_CONNECT)
-            }
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                add(Manifest.permission.NEARBY_WIFI_DEVICES)
-            }
+        val missing = missingNearbyPermissions()
+        if (missing.isNotEmpty()) {
+            Log.e(TAG, "Missing Nearby permissions: ${missing.joinToString()}")
         }
-
-        return permissions.all { permission ->
-            ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
-        }
+        return missing.isEmpty()
     }
 
     @SuppressLint("MissingPermission")
@@ -590,7 +623,7 @@ class NearbyProtocolEngine(
 
     @SuppressLint("MissingPermission")
     override suspend fun startDiscovery() {
-        if (!hasNearbyPermissions()) {
+        if (!canActuallyUseNearby()) {
             Log.e(TAG, "startDiscovery aborted: missing Nearby permissions")
             advertisingRunning = false
             discoveryRunning = false
@@ -622,16 +655,14 @@ class NearbyProtocolEngine(
                 Log.d(TAG, "startAdvertising SUCCESS")
             }.addOnFailureListener { error ->
                 val code = (error as? ApiException)?.statusCode
+                Log.e(TAG, "startAdvertising FAILED code=$code message=${error.message}", error)
 
-                if (code == 8001) {
-                    advertisingRunning = true
-                    Log.d(TAG, "startAdvertising already active; treating as SUCCESS")
-                } else {
-                    advertisingRunning = false
-                    Log.e(TAG, "startAdvertising FAILED code=$code message=${error.message}", error)
-                }
-
+                advertisingRunning = false
                 advertisingStarting.set(false)
+
+                scope.launch {
+                    restartNearbySoon()
+                }
             }
         }
 
@@ -648,16 +679,14 @@ class NearbyProtocolEngine(
                 Log.d(TAG, "startDiscovery SUCCESS")
             }.addOnFailureListener { error ->
                 val code = (error as? ApiException)?.statusCode
+                Log.e(TAG, "startDiscovery FAILED code=$code message=${error.message}", error)
 
-                if (code == 8002) {
-                    discoveryRunning = true
-                    Log.d(TAG, "startDiscovery already active; treating as SUCCESS")
-                } else {
-                    discoveryRunning = false
-                    Log.e(TAG, "startDiscovery FAILED code=$code message=${error.message}", error)
-                }
-
+                discoveryRunning = false
                 discoveryStarting.set(false)
+
+                scope.launch {
+                    restartNearbySoon()
+                }
             }
         }
     }
@@ -716,12 +745,24 @@ class NearbyProtocolEngine(
         }
     }
 
+    private fun parseNodeIdFromEndpointName(endpointName: String): String? {
+        return endpointName.substringBefore("|").takeIf { it.isNotBlank() }
+    }
+
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             Log.d(TAG, "onEndpointFound endpointId=$endpointId name=${info.endpointName}")
 
             if (endpointId in connectedEndpoints || endpointId in connectingEndpoints) {
                 Log.d(TAG, "Ignoring endpoint already known endpointId=$endpointId")
+                return
+            }
+
+            val remoteNodeId = parseNodeIdFromEndpointName(info.endpointName)
+
+            // Evita que ambos lados pidan conexión al mismo tiempo.
+            if (remoteNodeId != null && localNodeId > remoteNodeId) {
+                Log.d(TAG, "Waiting for remote to request connection. local=$localNodeId remote=$remoteNodeId")
                 return
             }
 
@@ -733,11 +774,8 @@ class NearbyProtocolEngine(
                 }
                 .addOnFailureListener { error ->
                     Log.e(TAG, "requestConnection FAILED endpointId=$endpointId error=${error.message}", error)
-
                     connectingEndpoints.remove(endpointId)
-                    scope.launch {
-                        startDiscovery()
-                    }
+                    restartNearbySoon()
                 }
         }
 
