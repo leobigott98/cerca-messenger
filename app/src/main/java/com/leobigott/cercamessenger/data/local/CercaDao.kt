@@ -63,6 +63,22 @@ interface DtnMessageDao {
 
     @Query("""
     UPDATE dtn_messages
+    SET status = :newStatus,
+    copiesLeft = CASE WHEN copiesLeft <= 0 THEN 1 ELSE copiesLeft END
+    WHERE isFromMe = 1
+      AND status = :oldStatus
+      AND timestamp < :olderThan
+      AND ttlExpiresAt > :now
+""")
+    suspend fun resetStaleSendingMessages(
+        oldStatus: String = "SENDING",
+        newStatus: String = "WAITING_FOR_RELAY",
+        olderThan: Long,
+        now: Long
+    )
+
+    @Query("""
+    UPDATE dtn_messages
     SET status = 'EXPIRED'
     WHERE ttlExpiresAt <= :now
     AND status NOT IN ('DELIVERED', 'FAILED', 'EXPIRED')

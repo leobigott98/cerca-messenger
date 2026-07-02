@@ -43,8 +43,14 @@ class FirebaseCloudSyncService(
 
     private suspend fun ensureAnonymousAuth() {
         if (auth.currentUser == null) {
+            Log.d(TAG, "No Firebase user. Signing in anonymously...")
             auth.signInAnonymously().await()
         }
+
+        Log.d(
+            TAG,
+            "Firebase auth user=${auth.currentUser?.uid} isAnonymous=${auth.currentUser?.isAnonymous}"
+        )
     }
 
     private suspend fun uploadUnsyncedMessages() {
@@ -79,14 +85,20 @@ class FirebaseCloudSyncService(
             )
 
             runCatching {
-                firestore.collection(collection)
-                    .document(message.id)
-                    .set(data, SetOptions.merge())
-                    .await()
+                val docRef = firestore.collection(collection).document(message.id)
+
+                docRef.set(data, SetOptions.merge()).await()
 
                 database.messageDao().markSyncedToCloud(message.id)
 
                 Log.d(TAG, "Cloud upload SUCCESS id=${message.id} collection=$collection")
+            }.onFailure { error ->
+                Log.e(
+                    TAG,
+                    "Cloud upload FAILED id=${message.id} collection=$collection " +
+                            "scope=${message.destinationScope} error=${error.message}",
+                    error
+                )
             }.onFailure { error ->
                 Log.e(
                     TAG,
@@ -164,7 +176,7 @@ class FirebaseCloudSyncService(
 
         val snapshot = firestore.collection("dtn_messages")
             .whereGreaterThan("ttlExpiresAt", now)
-            .limit(500)
+            .limit(250)
             .get()
             .await()
 

@@ -103,6 +103,7 @@ class NearbyProtocolEngine(
     private val discoveryStarting = AtomicBoolean(false)
     private var restartingNearby = false
     private var localNodeMode: NodeMode = loadNodeMode()
+    private var emptyHeartbeatCount = 0
 
     private val notificationHelper = CercaNotificationHelper(context)
 
@@ -589,6 +590,26 @@ class NearbyProtocolEngine(
     }
 
     @SuppressLint("MissingPermission")
+    private suspend fun forceRestartNearbyNow() {
+        Log.e(TAG, "Force restarting Nearby NOW")
+
+        advertisingRunning = false
+        discoveryRunning = false
+        advertisingStarting.set(false)
+        discoveryStarting.set(false)
+        connectingEndpoints.clear()
+        connectedEndpoints.clear()
+
+        runCatching { client.stopDiscovery() }
+        runCatching { client.stopAdvertising() }
+        runCatching { client.stopAllEndpoints() }
+
+        kotlinx.coroutines.delay(1000)
+
+        startDiscovery()
+    }
+
+    @SuppressLint("MissingPermission")
     override suspend fun refreshNearby() = nearbyOperationMutex.withLock {
         if (!hasNearbyPermissions()) {
             Log.e(TAG, "refreshNearby aborted: missing Nearby permissions")
@@ -606,19 +627,51 @@ class NearbyProtocolEngine(
             sendSummary(endpointId)
         }
 
+        if (connectedEndpoints.isEmpty() && connectingEndpoints.isEmpty()) {
+            emptyHeartbeatCount++
+
+            val hasInternet = statusProvider.hasInternet()
+
+            if (!hasInternet && emptyHeartbeatCount >= 3) {
+                Log.e(TAG, "No endpoints and no internet after $emptyHeartbeatCount heartbeats. Forcing Nearby restart.")
+                emptyHeartbeatCount = 0
+                forceRestartNearbyNow()
+                return
+            }
+
+            if (hasInternet && emptyHeartbeatCount >= 10) {
+                Log.d(TAG, "No Nearby endpoints, but internet is available. Not forcing Nearby restart.")
+                emptyHeartbeatCount = 0
+            }
+        } else {
+            emptyHeartbeatCount = 0
+        }
+
         // 2) Intentar arrancar advertising/discovery si no están activos.
         if (!advertisingRunning || !discoveryRunning) {
             startDiscovery()
         }
 
-//        // 3) Intentar reenviar mensajes pendientes.
-//        tryForwardAll()
-//
-//        // 4) Si hay internet, sincronizar nube y volver a intentar forwarding.
+        // 3) Intentar reenviar mensajes pendientes.
+        recoverStaleSendingMessages()
+        tryForwardAll()
+
+        // 4) Si hay internet, sincronizar nube y volver a intentar forwarding.
 //        if (statusProvider.hasInternet()) {
 //            cloudSyncService.syncNow()
+//            recoverStaleSendingMessages()
 //            tryForwardAll()
 //        }
+    }
+
+    private suspend fun recoverStaleSendingMessages() {
+        val now = System.currentTimeMillis()
+        val staleAfterMillis = 15_000L
+
+        database.messageDao().resetStaleSendingMessages(
+            olderThan = now - staleAfterMillis,
+            now = now
+        )
     }
 
     @SuppressLint("MissingPermission")
