@@ -1,5 +1,6 @@
 package com.leobigott.cercamessenger.protocol.cloud
 
+import android.content.Context
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
@@ -14,6 +15,8 @@ import android.util.Log
 import java.util.Date
 import com.leobigott.cercamessenger.protocol.crypto.ContactCrypto
 import com.leobigott.cercamessenger.data.local.AckEntity
+import com.leobigott.cercamessenger.protocol.cerca.CercaProtocolConfig
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Cloud bridge for CERCA.
@@ -23,6 +26,7 @@ import com.leobigott.cercamessenger.data.local.AckEntity
  * and downloads active crisis reports from the cloud into Room so CERCA can relay them offline.
  */
 class FirebaseCloudSyncService(
+    private val context: Context,
     private val database: CercaDatabase,
     private val localNodeId: String,
     private val crypto: ContactCrypto = ContactCrypto(),
@@ -32,15 +36,97 @@ class FirebaseCloudSyncService(
     private companion object {
         private const val TAG = "CERCA_Firebase"
         private const val ACK_TTL_MILLIS = 4 * 60 * 60 * 1000L
+
+        private const val PREFS = "cerca_cloud_sync"
+
+        private const val KEY_LAST_DTN_DOWNLOAD_AT = "last_dtn_download_at"
+        private const val KEY_LAST_CRISIS_DOWNLOAD_AT = "last_crisis_download_at"
+        private const val KEY_LAST_ACK_DOWNLOAD_AT = "last_ack_download_at"
+
+        private const val MIN_DTN_DOWNLOAD_INTERVAL_MS = 5 * 60 * 1000L
+        private const val MIN_CRISIS_DOWNLOAD_INTERVAL_MS = 10 * 60 * 1000L
+        private const val MIN_ACK_DOWNLOAD_INTERVAL_MS = 60 * 1000L
+
+        private const val DTN_DOWNLOAD_LIMIT = 30L
+        private const val CRISIS_DOWNLOAD_LIMIT = 30L
+        private const val ACK_DOWNLOAD_LIMIT = 50L
     }
 
-    override suspend fun syncNow() {
-        Log.d(TAG, "syncNow started")
+    private val syncMutex = kotlinx.coroutines.sync.Mutex()
+
+    private fun prefs() =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    private fun getLastSyncAt(key: String): Long {
+        return prefs().getLong(key, 0L)
+    }
+
+    private fun setLastSyncAt(key: String, value: Long) {
+        prefs().edit().putLong(key, value).apply()
+    }
+
+    private fun canRunSync(key: String, minIntervalMs: Long, now: Long): Boolean {
+        val last = getLastSyncAt(key)
+        return now - last >= minIntervalMs
+    }
+
+    //private val config: CercaProtocolConfig = CercaProtocolConfig()
+
+    override suspend fun uploadOnly() = syncMutex.withLock {
         ensureAnonymousAuth()
         uploadUnsyncedMessages()
-        downloadActiveCrisisReports()
-        downloadActiveDtnMessages()
-        downloadDeliveryAcks()
+    }
+
+    override suspend fun downloadNow() = syncMutex.withLock {
+        ensureAnonymousAuth()
+
+        val now = System.currentTimeMillis()
+
+        if (canRunSync(KEY_LAST_ACK_DOWNLOAD_AT, MIN_ACK_DOWNLOAD_INTERVAL_MS, now)) {
+            downloadDeliveryAcks()
+            setLastSyncAt(KEY_LAST_ACK_DOWNLOAD_AT, now)
+        }
+
+        if (canRunSync(KEY_LAST_DTN_DOWNLOAD_AT, MIN_DTN_DOWNLOAD_INTERVAL_MS, now)) {
+            downloadActiveDtnMessages()
+            setLastSyncAt(KEY_LAST_DTN_DOWNLOAD_AT, now)
+        }
+
+        if (canRunSync(KEY_LAST_CRISIS_DOWNLOAD_AT, MIN_CRISIS_DOWNLOAD_INTERVAL_MS, now)) {
+            downloadActiveCrisisReports()
+            setLastSyncAt(KEY_LAST_CRISIS_DOWNLOAD_AT, now)
+        }
+    }
+
+    override suspend fun syncNow(): Unit = syncMutex.withLock {
+        Log.d(TAG, "syncNow started")
+
+        ensureAnonymousAuth()
+        uploadUnsyncedMessages()
+
+        val now = System.currentTimeMillis()
+
+        if (canRunSync(KEY_LAST_ACK_DOWNLOAD_AT, MIN_ACK_DOWNLOAD_INTERVAL_MS, now)) {
+            downloadDeliveryAcks()
+            setLastSyncAt(KEY_LAST_ACK_DOWNLOAD_AT, now)
+        } else {
+            Log.d(TAG, "Skipping ACK download: cooldown")
+        }
+
+        if (canRunSync(KEY_LAST_DTN_DOWNLOAD_AT, MIN_DTN_DOWNLOAD_INTERVAL_MS, now)) {
+            downloadActiveDtnMessages()
+            setLastSyncAt(KEY_LAST_DTN_DOWNLOAD_AT, now)
+        } else {
+            Log.d(TAG, "Skipping DTN download: cooldown")
+        }
+
+        if (canRunSync(KEY_LAST_CRISIS_DOWNLOAD_AT, MIN_CRISIS_DOWNLOAD_INTERVAL_MS, now)) {
+            downloadActiveCrisisReports()
+            setLastSyncAt(KEY_LAST_CRISIS_DOWNLOAD_AT, now)
+        } else {
+            Log.d(TAG, "Skipping crisis download: cooldown")
+        }
+
         Log.d(TAG, "syncNow finished")
     }
 
@@ -109,14 +195,18 @@ class FirebaseCloudSyncService(
     private suspend fun downloadActiveCrisisReports() {
         val now = System.currentTimeMillis()
 
+        val lastDownloadAt = getLastSyncAt(KEY_LAST_CRISIS_DOWNLOAD_AT)
+
         val snapshot = firestore.collection("crisis_reports")
-            .whereGreaterThan("ttlExpiresAt", now)
-            .limit(250)
+            .whereGreaterThan("timestamp", lastDownloadAt)
+            .limit(CRISIS_DOWNLOAD_LIMIT)
             .get()
             .await()
 
         val localExisting = database.messageDao().getBufferMessageIds().toSet()
         val downloaded = snapshot.documents.mapNotNull { doc ->
+            val ttlExpiresAt = doc.getLong("ttlExpiresAt") ?: (now + 60 * 60 * 1000L)
+            if (ttlExpiresAt <= now) return@mapNotNull null
             if (doc.id in localExisting) return@mapNotNull null
             val senderId = doc.getString("senderId") ?: return@mapNotNull null
             if (senderId == localNodeId) return@mapNotNull null
@@ -131,7 +221,7 @@ class FirebaseCloudSyncService(
                 isEncrypted = false,
                 timestamp = doc.getLong("timestamp") ?: now,
                 receivedAt = now,
-                ttlExpiresAt = doc.getLong("ttlExpiresAt") ?: (now + 60 * 60 * 1000L),
+                ttlExpiresAt = ttlExpiresAt,
                 isFromMe = false,
                 isEmergency = doc.getBoolean("isEmergency") ?: true,
                 crisisType = doc.getString("crisisType") ?: "NEED_HELP",
@@ -170,16 +260,20 @@ class FirebaseCloudSyncService(
     private suspend fun downloadDeliveryAcks() {
         val now = System.currentTimeMillis()
 
+        val lastAckDownloadAt = getLastSyncAt(KEY_LAST_ACK_DOWNLOAD_AT)
+
         val snapshot = firestore.collection("dtn_acks")
             .whereEqualTo("senderId", localNodeId)
-            .whereGreaterThan("ttlExpiresAt", now)
-            .limit(250)
+            .whereGreaterThan("timestamp", lastAckDownloadAt)
+            .limit(ACK_DOWNLOAD_LIMIT)
             .get()
             .await()
 
         Log.d(TAG, "downloadDeliveryAcks snapshot=${snapshot.size()}")
 
         snapshot.documents.forEach { doc ->
+            val ttlExpiresAt = doc.getLong("ttlExpiresAt") ?: now
+            if (ttlExpiresAt <= now) return@forEach
             val messageId = doc.getString("messageId") ?: return@forEach
             val ackedByNodeId = doc.getString("ackedByNodeId") ?: return@forEach
             val deliveredAt = doc.getLong("timestamp") ?: now
@@ -206,9 +300,11 @@ class FirebaseCloudSyncService(
     private suspend fun downloadActiveDtnMessages() {
         val now = System.currentTimeMillis()
 
+        val lastDownloadAt = getLastSyncAt(KEY_LAST_DTN_DOWNLOAD_AT)
+
         val snapshot = firestore.collection("dtn_messages")
-            .whereGreaterThan("ttlExpiresAt", now)
-            .limit(250)
+            .whereGreaterThan("timestamp", lastDownloadAt)
+            .limit(DTN_DOWNLOAD_LIMIT)
             .get()
             .await()
 
@@ -217,6 +313,9 @@ class FirebaseCloudSyncService(
         val localExisting = database.messageDao().getAllMessageIds().toSet()
 
         val downloaded = snapshot.documents.mapNotNull { doc ->
+            val ttlExpiresAt = doc.getLong("ttlExpiresAt") ?: return@mapNotNull null
+            if (ttlExpiresAt <= now) return@mapNotNull null
+
             val senderId = doc.getString("senderId") ?: return@mapNotNull null
             if (senderId == localNodeId) return@mapNotNull null
 

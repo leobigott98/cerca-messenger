@@ -21,5 +21,9 @@ data class CercaProtocolConfig(
     val wCrisisPriority: Double = 0.30,
     val wGatewayMode: Double = 0.20,
     val wVolunteerMode: Double = 0.10,
-    val wVerification: Double = 0.05
+    val wVerification: Double = 0.05,
+    val cloudMaxBroadcastDownloadsPerSync: Int = 40,
+    val cloudMaxDirectDownloadsPerSync: Int = 60,
+    val cloudMinBroadcastPriority: Int = 2,
+    val cloudBroadcastCooldownMillis: Long = 15 * 60 * 1000L
 )

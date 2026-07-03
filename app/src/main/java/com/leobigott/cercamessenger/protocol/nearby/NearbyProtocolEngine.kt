@@ -58,10 +58,12 @@ import android.util.Log
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.annotation.RequiresPermission
 import androidx.core.content.ContextCompat
 import com.leobigott.cercamessenger.notifications.CercaNotificationHelper
 import com.google.android.gms.common.api.ApiException
 import com.leobigott.cercamessenger.data.local.DeletedMessageEntity
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -74,6 +76,7 @@ class NearbyProtocolEngine(
     private val crypto: ContactCrypto = ContactCrypto(),
     private val cloudSyncService: CloudSyncService = NoOpCloudSyncService()
 ) : ProtocolEngine {
+    private val recentlyForwardedToPeer = mutableMapOf<String, Long>()
 
     private companion object {
         private const val TAG = "CERCA_Nearby"
@@ -122,7 +125,7 @@ class NearbyProtocolEngine(
     }
 
     override suspend fun syncCloudNow() {
-        cloudSyncService.syncNow()
+        cloudSyncService.uploadOnly()
         tryForwardAll()
     }
 
@@ -140,6 +143,27 @@ class NearbyProtocolEngine(
                     message.toOfflineMessage(localNodeId)
                 }
             }
+    }
+
+    private fun recentlyForwardKey(messageId: String, peerNodeId: String): String {
+        return "$messageId::$peerNodeId"
+    }
+
+    private fun wasRecentlyForwarded(messageId: String, peerNodeId: String): Boolean {
+        val now = System.currentTimeMillis()
+        val key = recentlyForwardKey(messageId, peerNodeId)
+        val last = recentlyForwardedToPeer[key] ?: return false
+        return now - last < 60_000L
+    }
+
+    private fun markRecentlyForwarded(messageId: String, peerNodeId: String) {
+        val now = System.currentTimeMillis()
+        recentlyForwardedToPeer[recentlyForwardKey(messageId, peerNodeId)] = now
+
+        if (recentlyForwardedToPeer.size > 2_000) {
+            val cutoff = now - 5 * 60_000L
+            recentlyForwardedToPeer.entries.removeIf { it.value < cutoff }
+        }
     }
 
     override fun observePublicBroadcasts(): Flow<List<OfflineMessage>> {
@@ -195,7 +219,10 @@ class NearbyProtocolEngine(
             .all()
             .firstOrNull { candidate ->
                 candidate.nodeId == message.destinationId &&
-                        !candidate.endpointId.isNullOrBlank()
+                        candidate.nodeId != localNodeId &&
+                        !candidate.endpointId.isNullOrBlank() &&
+                        candidate.endpointId in connectedEndpoints &&
+                        candidate.isNearby
             }
 
         val endpointId = peer?.endpointId
@@ -217,7 +244,7 @@ class NearbyProtocolEngine(
 
             database.messageDao().updateRoutingState(
                 messageId = message.id,
-                copiesLeft = 0,
+                copiesLeft = message.copiesLeft,
                 hopCount = message.hopCount,
                 pathCsv = newPath.joinToString(","),
                 status = MessageStatus.SENDING.name,
@@ -412,6 +439,45 @@ class NearbyProtocolEngine(
         }
     }
 
+    private fun sendMessageEnvelope(
+        endpointId: String,
+        messageId: String,
+        envelope: CercaEnvelope
+    ) {
+        val raw = json.encodeToString(envelope)
+        val bytes = raw.toByteArray(StandardCharsets.UTF_8)
+
+        client.sendPayload(endpointId, Payload.fromBytes(bytes))
+            .addOnSuccessListener {
+                Log.d(TAG, "sendPayload SUCCESS endpointId=$endpointId messageId=$messageId")
+            }
+            .addOnFailureListener { error ->
+                Log.e(TAG, "sendPayload FAILED endpointId=$endpointId messageId=$messageId error=${error.message}", error)
+
+                connectedEndpoints.remove(endpointId)
+                connectingEndpoints.remove(endpointId)
+
+                scope.launch {
+                    database.peerDao().markDisconnected(endpointId)
+
+                    val current = database.messageDao().getById(messageId)
+                    if (current != null &&
+                        current.status == MessageStatus.SENDING.name &&
+                        !database.ackDao().hasAck(messageId)
+                    ) {
+                        database.messageDao().updateStatus(
+                            messageId = messageId,
+                            status = MessageStatus.WAITING_FOR_RELAY.name
+                        )
+                    }
+
+                    updateDensity()
+                    startDiscovery()
+                    tryForwardAll()
+                }
+            }
+    }
+
     override suspend fun sendCrisisMessage(
         type: CrisisMessageType,
         text: String,
@@ -474,7 +540,7 @@ class NearbyProtocolEngine(
         forwardPublicBroadcastNow(message)
 
         scope.launch {
-            runCatching { cloudSyncService.syncNow() }
+            runCatching { cloudSyncService.uploadOnly() }
                 .onFailure { error ->
                     Log.e(TAG, "cloudSync after sendCrisisMessage failed: ${error.message}", error)
                 }
@@ -531,7 +597,7 @@ class NearbyProtocolEngine(
         forwardPublicBroadcastNow(message)
 
         scope.launch {
-            runCatching { cloudSyncService.syncNow() }
+            runCatching { cloudSyncService.uploadOnly() }
                 .onFailure { error ->
                     Log.e(TAG, "cloudSync after sendPublicBroadcast failed: ${error.message}", error)
                 }
@@ -950,6 +1016,11 @@ class NearbyProtocolEngine(
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) = Unit
     }
 
+    private fun updateLocalInternetTimestampOnly() {
+        if (!statusProvider.hasInternet()) return
+        lastInternetAt = System.currentTimeMillis()
+    }
+
     private suspend fun handleEnvelope(endpointId: String, envelope: CercaEnvelope) {
         if (envelope.senderNodeId == localNodeId) {
             Log.d(TAG, "Ignoring self envelope endpointId=$endpointId type=${envelope.type}")
@@ -964,14 +1035,14 @@ class NearbyProtocolEngine(
 
         when (envelope.type) {
             CercaPayloadType.HELLO -> {
-                refreshLocalInternetState()
+                updateLocalInternetTimestampOnly()
                 envelope.hello?.let { handleHello(endpointId, envelope, it) }
                 sendSummary(endpointId)
                 tryForwardAll()
             }
 
             CercaPayloadType.SUMMARY -> {
-                refreshLocalInternetState()
+                updateLocalInternetTimestampOnly()
                 envelope.summary?.let { handleSummary(endpointId, envelope, it) }
                 tryForwardAll()
             }
@@ -1037,6 +1108,7 @@ class NearbyProtocolEngine(
         }
     }
 
+    @RequiresPermission(Manifest.permission.POST_NOTIFICATIONS)
     private suspend fun handleIncomingMessage(
         endpointId: String,
         envelope: CercaEnvelope,
@@ -1087,7 +1159,7 @@ class NearbyProtocolEngine(
                 sendAck(endpointId, incoming.id, localNodeId)
 
                 scope.launch {
-                    kotlinx.coroutines.delay(500)
+                    delay(500)
                     sendAck(endpointId, incoming.id, localNodeId)
                 }
             }
@@ -1133,13 +1205,24 @@ class NearbyProtocolEngine(
                     status = MessageStatus.RELAYED.name
                 )
             )
+            val localConversationId = localDirectConversationId(
+                senderId = incoming.senderId,
+                destinationId = incoming.destinationId
+            )
+
+            val displayText = if (incoming.isEncrypted && incoming.encryptedBodyJson != null) {
+                runCatching { crypto.decryptJson(incoming.encryptedBodyJson) }
+                    .getOrElse { "Unable to decrypt message." }
+            } else {
+                incoming.text
+            }
 
             notificationHelper.showIncomingMessageNotification(
-                conversationId = targetConversationId,
+                conversationId = localConversationId,
                 senderName = envelope.senderDisplayName,
-                text = received.text,
+                text = displayText,
                 isEmergency = received.isEmergency || received.crisisPriority >= 4,
-                isPublicBroadcast = targetConversationId == CrisisConstants.PUBLIC_BROADCAST_CONVERSATION_ID
+                isPublicBroadcast = false
             )
 
             val saved = database.messageDao().getById(received.id)
@@ -1194,7 +1277,7 @@ class NearbyProtocolEngine(
             sendAck(endpointId, received.id, localNodeId)
 
             scope.launch {
-                kotlinx.coroutines.delay(500)
+                delay(500)
                 sendAck(endpointId, received.id, localNodeId)
             }
 
@@ -1504,6 +1587,10 @@ class NearbyProtocolEngine(
             .toByteArray(StandardCharsets.UTF_8)
             .size
 
+        if (wasRecentlyForwarded(payload.id, peer.nodeId)) {
+            return null
+        }
+
         val decision = router.forwardingPriority(
             self = self,
             peer = peerCtx,
@@ -1531,7 +1618,15 @@ class NearbyProtocolEngine(
             hopCount = message.hopCount,
             path = newPath
         )
-        sendEnvelope(candidate.endpointId, baseEnvelope(type = CercaPayloadType.MESSAGE, message = outboundPayload))
+        sendMessageEnvelope(
+            endpointId = candidate.endpointId,
+            messageId = message.id,
+            envelope = baseEnvelope(
+                type = CercaPayloadType.MESSAGE,
+                message = outboundPayload
+            )
+        )
+        markRecentlyForwarded(message.id, candidate.peer.nodeId)
 
         val senderCopies = if (message.destinationId == candidate.peer.nodeId) 0 else router.senderCopiesAfterForward(message.copiesLeft)
         val newStatus = if (message.destinationId == candidate.peer.nodeId) {
@@ -1756,6 +1851,8 @@ class NearbyProtocolEngine(
             localNodeId = localNodeId,
             readAt = System.currentTimeMillis()
         )
+
+        notificationHelper.cancelConversationNotifications(conversationId)
     }
 
     override suspend fun restartNearby() {

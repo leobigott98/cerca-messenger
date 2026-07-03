@@ -63,6 +63,28 @@ class CercaRouterEngine(
         )
     }
 
+    fun senderCopiesAfterForward(
+        currentCopies: Int,
+        peerIsGateway: Boolean
+    ): Int {
+        return if (peerIsGateway) {
+            currentCopies
+        } else {
+            max(1, currentCopies / 2)
+        }
+    }
+
+    fun receiverCopiesAfterForward(
+        currentCopies: Int,
+        peerIsGateway: Boolean
+    ): Int {
+        return if (peerIsGateway) {
+            1
+        } else {
+            max(1, ceil(currentCopies / 2.0).toInt())
+        }
+    }
+
     fun shouldForward(
         self: NodeContext,
         peer: NodeContext,
@@ -123,6 +145,15 @@ class CercaRouterEngine(
                     config.wVerification * verificationScore
             )
             return ForwardDecision(true, selfUtility, peerUtility, "Crisis priority forwarding")
+        }
+
+        if (peer.hasInternetGateway || peer.nodeMode == "GATEWAY") {
+            return ForwardDecision(
+                shouldForward = true,
+                utilitySelf = utility(self, now),
+                utilityPeer = clamp01(utility(peer, now) + config.wGatewayMode),
+                reason = "Peer is internet gateway"
+            )
         }
 
         if (message.copiesLeft <= 1) {

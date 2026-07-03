@@ -26,6 +26,7 @@ object ProtocolEngineProvider {
                     displayName = "${Build.MODEL ?: "CERCA Android"}|$nodeId",
                     crypto = crypto,
                     cloudSyncService = FirebaseCloudSyncService(
+                        context = appContext,
                         database = database,
                         localNodeId = nodeId,
                         crypto = crypto

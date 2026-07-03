@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.annotation.RequiresPermission
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -18,6 +19,7 @@ import kotlin.math.absoluteValue
 class CercaNotificationHelper(
     private val context: Context
 ) {
+    @RequiresPermission(Manifest.permission.POST_NOTIFICATIONS)
     fun showIncomingMessageNotification(
         conversationId: String,
         senderName: String?,
@@ -89,6 +91,34 @@ class CercaNotificationHelper(
                 ) == PackageManager.PERMISSION_GRANTED
     }
 
+    fun cancelConversationNotifications(conversationId: String) {
+        val manager = NotificationManagerCompat.from(context)
+
+        manager.cancel(
+            notificationId(
+                conversationId = conversationId,
+                isEmergency = false,
+                isPublicBroadcast = false
+            )
+        )
+
+        manager.cancel(
+            notificationId(
+                conversationId = conversationId,
+                isEmergency = true,
+                isPublicBroadcast = false
+            )
+        )
+
+        manager.cancel(
+            notificationId(
+                conversationId = conversationId,
+                isEmergency = false,
+                isPublicBroadcast = true
+            )
+        )
+    }
+
     private fun createChannels() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
 
@@ -114,7 +144,7 @@ class CercaNotificationHelper(
         manager.createNotificationChannel(crisisChannel)
     }
 
-    private fun notificationId(
+    fun notificationId(
         conversationId: String,
         isEmergency: Boolean,
         isPublicBroadcast: Boolean
