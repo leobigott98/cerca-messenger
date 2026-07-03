@@ -81,9 +81,17 @@ class NearbyLifecycleService : Service() {
 
         scope.launch {
             while (true) {
-                if (hasInternetConnection()) {
+                val cloudSyncEnabled = CercaSettingsStore.cloudSyncEnabled.value
+                val cloudSyncSeconds = CercaSettingsStore.cloudSyncSeconds.value
+
+                if (!cloudSyncEnabled) {
+                    Log.d(TAG, "Cloud sync loop skipped: cloud sync disabled")
+                } else if (hasInternetConnection()) {
                     runCatching {
-                        Log.d(TAG, "Cloud sync loop: syncing Firebase")
+                        Log.d(
+                            TAG,
+                            "Cloud sync loop: syncing Firebase interval=${cloudSyncSeconds}s"
+                        )
                         ProtocolEngineProvider.engine.syncCloudNow()
                     }.onFailure { error ->
                         Log.e(TAG, "Cloud sync loop failed: ${error.message}", error)
@@ -92,7 +100,11 @@ class NearbyLifecycleService : Service() {
                     Log.d(TAG, "Cloud sync loop skipped: no validated internet")
                 }
 
-                delay(60_000L)
+                val cloudSyncMillis = cloudSyncSeconds
+                    .takeIf { it in CercaSettingsStore.allowedCloudSyncSeconds }
+                    ?: 15
+
+                delay(cloudSyncMillis * 1000L)
             }
         }
     }

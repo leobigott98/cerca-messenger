@@ -153,7 +153,18 @@ class NearbyProtocolEngine(
     }
 
     override fun observeNearbyDevices(): Flow<List<DeviceNode>> =
-        database.peerDao().observePeers().map { peers -> peers.map { it.toDeviceNode() } }
+        database.peerDao().observePeers().map { peers ->
+            val now = System.currentTimeMillis()
+            peers
+                .filter { peer ->
+                    peer.nodeId != localNodeId &&
+                            peer.isNearby &&
+                            !peer.endpointId.isNullOrBlank() &&
+                            now - peer.lastSeenAt <= 30_000L
+                }
+                .distinctBy { it.nodeId }
+                .map { it.toDeviceNode() }
+        }
 
     override fun observeMessages(conversationId: String): Flow<List<OfflineMessage>> {
         return database.messageDao()
@@ -940,6 +951,14 @@ class NearbyProtocolEngine(
     }
 
     private suspend fun handleEnvelope(endpointId: String, envelope: CercaEnvelope) {
+        if (envelope.senderNodeId == localNodeId) {
+            Log.d(TAG, "Ignoring self envelope endpointId=$endpointId type=${envelope.type}")
+            connectedEndpoints.remove(endpointId)
+            connectingEndpoints.remove(endpointId)
+            database.peerDao().markDisconnected(endpointId)
+            return
+        }
+
         rememberPeerFromEnvelope(endpointId, envelope)
         updatePredictabilityOnEncounter(envelope.senderNodeId)
 
@@ -962,7 +981,7 @@ class NearbyProtocolEngine(
             }
 
             CercaPayloadType.ACK -> {
-                envelope.ack?.let { handleAck(it) }
+                envelope.ack?.let { handleAck(it, receivedFromEndpointId = endpointId) }
             }
         }
     }
@@ -1193,7 +1212,12 @@ class NearbyProtocolEngine(
         }
     }
 
-    private suspend fun handleAck(ack: AckPayload) {
+    private suspend fun handleAck(
+        ack: AckPayload,
+        receivedFromEndpointId: String? = null
+    ) {
+        val alreadyHadAck = database.ackDao().hasAck(ack.messageId)
+
         val entity = AckEntity(
             messageId = ack.messageId,
             deliveredTo = ack.deliveredTo,
@@ -1201,10 +1225,32 @@ class NearbyProtocolEngine(
             receivedFromNodeId = ack.receivedFromNodeId,
             createdAt = System.currentTimeMillis()
         )
+
         database.ackDao().upsert(entity)
         database.ackDao().markOwnMessagesDelivered(listOf(ack.messageId), localNodeId)
         database.ackDao().deleteRelayedMessagesByAck(listOf(ack.messageId), localNodeId)
         database.ackDao().pruneAcks(config.ackMaxSize)
+
+        if (!alreadyHadAck) {
+            floodAck(ack, exceptEndpointId = receivedFromEndpointId)
+        }
+    }
+
+    private suspend fun floodAck(
+        ack: AckPayload,
+        exceptEndpointId: String? = null
+    ) {
+        connectedEndpoints
+            .filter { it != exceptEndpointId }
+            .forEach { endpointId ->
+                sendEnvelope(
+                    endpointId,
+                    baseEnvelope(
+                        type = CercaPayloadType.ACK,
+                        ack = ack
+                    )
+                )
+            }
     }
 
     private suspend fun sendHello(endpointId: String) {
@@ -1616,14 +1662,45 @@ class NearbyProtocolEngine(
             }
         }
 
+        if (peer.nodeId == localNodeId) {
+            Log.d(TAG, "Not saving local node as peer endpointId=$endpointId")
+            return
+        }
+
+        database.peerDao().disconnectOldEndpointsForNode(
+            nodeId = peer.nodeId,
+            currentEndpointId = endpointId
+        )
+
         database.peerDao().upsert(peer)
     }
 
     private suspend fun upsertPeerFromRemote(endpointId: String, nodeId: String, name: String, hello: HelloPayload) {
+        if (nodeId == localNodeId) {
+            Log.d(TAG, "Not saving local node as peer endpointId=$endpointId")
+            return
+        }
+
+        database.peerDao().disconnectOldEndpointsForNode(
+            nodeId = nodeId,
+            currentEndpointId = endpointId
+        )
+
         database.peerDao().upsert(PeerEntity(nodeId, endpointId, visibleName(name), true, hello.batteryLevel, hello.bufferFreeRatio, 1.0, hello.hasInternetGateway, hello.nodeMode, hello.lastInternetAt, hello.credits, hello.smoothedDensity, System.currentTimeMillis()))
     }
 
     private suspend fun upsertPeerFromRemote(endpointId: String, nodeId: String, name: String, summary: SummaryPayload) {
+
+        if (nodeId == localNodeId) {
+            Log.d(TAG, "Not saving local node as peer endpointId=$endpointId")
+            return
+        }
+
+        database.peerDao().disconnectOldEndpointsForNode(
+            nodeId = nodeId,
+            currentEndpointId = endpointId
+        )
+
         database.peerDao().upsert(PeerEntity(nodeId, endpointId, visibleName(name), true, summary.batteryLevel, summary.bufferFreeRatio, 1.0, summary.hasInternetGateway, summary.nodeMode, summary.lastInternetAt, summary.credits, summary.smoothedDensity, System.currentTimeMillis()))
     }
 

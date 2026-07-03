@@ -13,6 +13,7 @@ import kotlinx.coroutines.tasks.await
 import android.util.Log
 import java.util.Date
 import com.leobigott.cercamessenger.protocol.crypto.ContactCrypto
+import com.leobigott.cercamessenger.data.local.AckEntity
 
 /**
  * Cloud bridge for CERCA.
@@ -30,6 +31,7 @@ class FirebaseCloudSyncService(
 ) : CloudSyncService {
     private companion object {
         private const val TAG = "CERCA_Firebase"
+        private const val ACK_TTL_MILLIS = 4 * 60 * 60 * 1000L
     }
 
     override suspend fun syncNow() {
@@ -180,6 +182,17 @@ class FirebaseCloudSyncService(
         snapshot.documents.forEach { doc ->
             val messageId = doc.getString("messageId") ?: return@forEach
             val ackedByNodeId = doc.getString("ackedByNodeId") ?: return@forEach
+            val deliveredAt = doc.getLong("timestamp") ?: now
+
+            database.ackDao().upsert(
+                AckEntity(
+                    messageId = messageId,
+                    deliveredTo = ackedByNodeId,
+                    deliveredAt = deliveredAt,
+                    receivedFromNodeId = ackedByNodeId,
+                    createdAt = now
+                )
+            )
 
             database.messageDao().markDeliveredFromCloudAck(messageId)
 
@@ -204,8 +217,6 @@ class FirebaseCloudSyncService(
         val localExisting = database.messageDao().getAllMessageIds().toSet()
 
         val downloaded = snapshot.documents.mapNotNull { doc ->
-            if (doc.id in localExisting) return@mapNotNull null
-
             val senderId = doc.getString("senderId") ?: return@mapNotNull null
             if (senderId == localNodeId) return@mapNotNull null
 
@@ -213,14 +224,23 @@ class FirebaseCloudSyncService(
             val encryptedBodyJson = doc.getString("encryptedBodyJson")
             val isEncrypted = doc.getBoolean("isEncrypted") ?: true
             val isForMe = destinationId == localNodeId
+            val cloudTtlExpiresAt = doc.getLong("ttlExpiresAt") ?: (now + 24 * 60 * 60 * 1000L)
 
             if (isForMe) {
                 uploadDeliveryAck(
                     messageId = doc.id,
                     senderId = senderId,
                     destinationId = destinationId,
-                    ttlExpiresAt = doc.getLong("ttlExpiresAt") ?: (now + 24 * 60 * 60 * 1000L)
+                    ttlExpiresAt = cloudTtlExpiresAt
                 )
+            }
+
+            if (doc.id in localExisting) {
+                Log.d(
+                    TAG,
+                    "Skipping cloud DTN id=${doc.id}: already exists locally isForMe=$isForMe ackEnsured=$isForMe"
+                )
+                return@mapNotNull null
             }
 
             val conversationId = localDirectConversationId(
@@ -260,7 +280,7 @@ class FirebaseCloudSyncService(
                 isEncrypted = isEncrypted,
                 timestamp = doc.getLong("timestamp") ?: now,
                 receivedAt = now,
-                ttlExpiresAt = doc.getLong("ttlExpiresAt") ?: (now + 24 * 60 * 60 * 1000L),
+                ttlExpiresAt = cloudTtlExpiresAt,
                 isFromMe = false,
                 isEmergency = doc.getBoolean("isEmergency") ?: false,
                 crisisType = doc.getString("crisisType") ?: "DIRECT_MESSAGE",
@@ -305,6 +325,7 @@ class FirebaseCloudSyncService(
 
         val now = System.currentTimeMillis()
         val ackId = "${messageId}_$localNodeId"
+        val ackExpiresAt = maxOf(ttlExpiresAt, now + ACK_TTL_MILLIS)
 
         val data = mapOf(
             "id" to ackId,
@@ -313,7 +334,7 @@ class FirebaseCloudSyncService(
             "destinationId" to destinationId,
             "ackedByNodeId" to localNodeId,
             "timestamp" to now,
-            "ttlExpiresAt" to ttlExpiresAt,
+            "ttlExpiresAt" to ackExpiresAt,
             "createdAt" to Timestamp.now(),
             "source" to "android-cerca"
         )

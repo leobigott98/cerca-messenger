@@ -269,6 +269,18 @@ interface PeerDao {
     @Query("UPDATE peers SET isNearby = 0, endpointId = NULL WHERE endpointId = :endpointId")
     suspend fun markDisconnected(endpointId: String)
 
+    @Query("""
+    UPDATE peers
+    SET isNearby = 0, endpointId = NULL
+    WHERE nodeId = :nodeId
+      AND endpointId IS NOT NULL
+      AND endpointId != :currentEndpointId
+""")
+    suspend fun disconnectOldEndpointsForNode(
+        nodeId: String,
+        currentEndpointId: String
+    )
+
     @Query("UPDATE peers SET isNearby = 0, endpointId = NULL")
     suspend fun markAllDisconnected()
 

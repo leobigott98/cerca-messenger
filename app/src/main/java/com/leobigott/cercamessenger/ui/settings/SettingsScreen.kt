@@ -62,6 +62,8 @@ fun SettingsScreen(
     var confirmDeleteMessages by remember { mutableStateOf(false) }
     var confirmDeleteContacts by remember { mutableStateOf(false) }
     val heartbeatSeconds by CercaSettingsStore.heartbeatSeconds.collectAsState()
+    val cloudSyncEnabled by CercaSettingsStore.cloudSyncEnabled.collectAsState()
+    val cloudSyncSeconds by CercaSettingsStore.cloudSyncSeconds.collectAsState()
 
     LaunchedEffect(state.result) {
         when (val result = state.result) {
@@ -163,6 +165,71 @@ fun SettingsScreen(
             }
             item {
                 ListItem(
+                    headlineContent = { Text("Sincronización en la nube") },
+                    supportingContent = {
+                        Text(
+                            if (cloudSyncEnabled) {
+                                "CERCA sube y descarga mensajes mediante Firebase cuando hay Internet."
+                            } else {
+                                "Cloud sync está apagado. Nearby seguirá funcionando normalmente."
+                            }
+                        )
+                    },
+                    leadingContent = { Icon(Icons.Default.CloudSync, contentDescription = null) },
+                    trailingContent = {
+                        Switch(
+                            checked = cloudSyncEnabled,
+                            onCheckedChange = { enabled ->
+                                CercaSettingsStore.setCloudSyncEnabled(context, enabled)
+                            }
+                        )
+                    }
+                )
+            }
+
+            item {
+                Column {
+                    Text(
+                        text = if (cloudSyncEnabled) {
+                            "Frecuencia de cloud sync: cada ${cloudSyncSeconds}s"
+                        } else {
+                            "Frecuencia de cloud sync"
+                        },
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        CercaSettingsStore.allowedCloudSyncSeconds.forEach { seconds ->
+                            FilterChip(
+                                selected = cloudSyncSeconds == seconds,
+                                enabled = cloudSyncEnabled,
+                                onClick = {
+                                    CercaSettingsStore.setCloudSyncSeconds(context, seconds)
+                                },
+                                label = { Text("${seconds}s") }
+                            )
+                        }
+                    }
+
+                    if (cloudSyncEnabled && cloudSyncSeconds == 5) {
+                        Text(
+                            text = "5s es ideal para pruebas o demos, pero puede consumir más batería y datos.",
+                            modifier = Modifier.padding(top = 8.dp),
+                            color = Color.Magenta
+                        )
+                    }
+
+                    if (!cloudSyncEnabled) {
+                        Text(
+                            text = "Los mensajes no se subirán ni descargarán desde Firebase hasta reactivar esta opción.",
+                            modifier = Modifier.padding(top = 8.dp),
+                            color = Color.Magenta
+                        )
+                    }
+                }
+            }
+            item {
+                ListItem(
                     headlineContent = { Text(strings.showRoutingMetadata) },
                     supportingContent = { Text(strings.showRoutingMetadataDescription) },
                     trailingContent = { Switch(checked = metadata.value, onCheckedChange = { metadata.value = it }) }
@@ -186,9 +253,24 @@ fun SettingsScreen(
             item {
                 ListItem(
                     headlineContent = { Text(strings.firebase) },
-                    supportingContent = { Text(strings.firebaseDescription) },
+                    supportingContent = {
+                        Text(
+                            if (cloudSyncEnabled) {
+                                "${strings.firebaseDescription} Sincronización automática cada ${cloudSyncSeconds}s."
+                            } else {
+                                "${strings.firebaseDescription} La sincronización automática está apagada."
+                            }
+                        )
+                    },
                     leadingContent = { Icon(Icons.Default.CloudSync, contentDescription = null) },
-                    trailingContent = { Button(enabled = !state.isBusy, onClick = viewModel::syncFirebaseNow) { Text(strings.sync) } }
+                    trailingContent = {
+                        Button(
+                            enabled = !state.isBusy,
+                            onClick = viewModel::syncFirebaseNow
+                        ) {
+                            Text(strings.sync)
+                        }
+                    }
                 )
             }
             item {
@@ -207,7 +289,7 @@ fun SettingsScreen(
                     trailingContent = { OutlinedButton(onClick = { confirmDeleteContacts = true }) { Text(strings.delete) } }
                 )
             }
-            item { ListItem(headlineContent = { Text("About") }, supportingContent = { Text("Proyecto elaborado por estudiantes de la UNIMET. Prototipo funcional. Versión 0.3.0") }) }
+            item { ListItem(headlineContent = { Text("About") }, supportingContent = { Text("Proyecto elaborado por estudiantes de la UNIMET. Prototipo funcional. Versión 0.4.0") }) }
             item { ListItem(headlineContent = { Text("Contacto") }, supportingContent = { Text("cerca-messenger.vercel.app, cerca@lab58.dev") }) }
         }
     }
