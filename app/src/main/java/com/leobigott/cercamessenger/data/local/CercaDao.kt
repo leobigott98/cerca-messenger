@@ -52,7 +52,12 @@ interface DtnMessageDao {
     @Query("SELECT * FROM dtn_messages WHERE id = :id LIMIT 1")
     suspend fun getById(id: String): DtnMessageEntity?
 
-    @Query("SELECT * FROM dtn_messages WHERE status NOT IN ('DELIVERED', 'EXPIRED', 'FAILED') ORDER BY crisisPriority DESC, isEmergency DESC, timestamp ASC")
+    @Query("""
+    SELECT * 
+    FROM dtn_messages 
+    WHERE status NOT IN ('DELIVERED', 'EXPIRED', 'FAILED', 'SENDING')
+    ORDER BY crisisPriority DESC, isEmergency DESC, timestamp ASC
+""")
     suspend fun getForwardableMessages(): List<DtnMessageEntity>
 
     @Query("SELECT id FROM dtn_messages WHERE status NOT IN ('DELIVERED', 'EXPIRED', 'FAILED')")

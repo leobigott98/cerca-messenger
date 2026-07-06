@@ -184,7 +184,7 @@ class NearbyProtocolEngine(
                     peer.nodeId != localNodeId &&
                             peer.isNearby &&
                             !peer.endpointId.isNullOrBlank() &&
-                            now - peer.lastSeenAt <= 30_000L
+                            now - peer.lastSeenAt <= 120_000L
                 }
                 .distinctBy { it.nodeId }
                 .map { it.toDeviceNode() }
@@ -252,9 +252,10 @@ class NearbyProtocolEngine(
                 utilityScore = 1.0f
             )
 
-            sendEnvelope(
-                endpointId,
-                baseEnvelope(
+            sendMessageEnvelope(
+                endpointId = endpointId,
+                messageId = message.id,
+                envelope = baseEnvelope(
                     type = CercaPayloadType.MESSAGE,
                     message = outboundPayload
                 )
@@ -298,9 +299,10 @@ class NearbyProtocolEngine(
             )
 
             connectedEndpoints.forEach { connectedEndpointId ->
-                sendEnvelope(
-                    connectedEndpointId,
-                    baseEnvelope(
+                sendMessageEnvelope(
+                    endpointId = connectedEndpointId,
+                    messageId = message.id,
+                    envelope = baseEnvelope(
                         type = CercaPayloadType.MESSAGE,
                         message = outboundPayload
                     )
@@ -431,7 +433,7 @@ class NearbyProtocolEngine(
 // Firebase queda en segundo plano.
         if (statusProvider.hasInternet()) {
             scope.launch {
-                runCatching { cloudSyncService.syncNow() }
+                runCatching { cloudSyncService.uploadOnly() }
                     .onFailure { error ->
                         Log.e(TAG, "cloudSync after sendMessage failed: ${error.message}", error)
                     }
@@ -687,6 +689,23 @@ class NearbyProtocolEngine(
     }
 
     @SuppressLint("MissingPermission")
+    private suspend fun restartAdvertisingAndDiscoveryOnly() {
+        Log.e(TAG, "Restarting advertising/discovery only")
+
+        advertisingRunning = false
+        discoveryRunning = false
+        advertisingStarting.set(false)
+        discoveryStarting.set(false)
+
+        runCatching { client.stopDiscovery() }
+        runCatching { client.stopAdvertising() }
+
+        delay(1000)
+
+        startDiscovery()
+    }
+
+    @SuppressLint("MissingPermission")
     override suspend fun refreshNearby() = nearbyOperationMutex.withLock {
         if (!hasNearbyPermissions()) {
             Log.e(TAG, "refreshNearby aborted: missing Nearby permissions")
@@ -709,10 +728,10 @@ class NearbyProtocolEngine(
 
             val hasInternet = statusProvider.hasInternet()
 
-            if (!hasInternet && emptyHeartbeatCount >= 3) {
+            if (!hasInternet && emptyHeartbeatCount >= 8) {
                 Log.e(TAG, "No endpoints and no internet after $emptyHeartbeatCount heartbeats. Forcing Nearby restart.")
                 emptyHeartbeatCount = 0
-                forceRestartNearbyNow()
+                restartAdvertisingAndDiscoveryOnly()
                 return
             }
 
@@ -912,7 +931,19 @@ class NearbyProtocolEngine(
         override fun onEndpointLost(endpointId: String) {
             Log.d(TAG, "onEndpointLost endpointId=$endpointId")
 
-            connectedEndpoints.remove(endpointId)
+            /*
+             * Importante:
+             * onEndpointLost significa que el endpoint dejó de aparecer en discovery,
+             * NO que una conexión ya establecida se haya desconectado.
+             *
+             * Si ya está conectado, no lo removemos aquí.
+             * La desconexión real se maneja en onDisconnected().
+             */
+            if (endpointId in connectedEndpoints) {
+                Log.d(TAG, "Endpoint lost from discovery but still connected endpointId=$endpointId")
+                return
+            }
+
             connectingEndpoints.remove(endpointId)
 
             scope.launch {
@@ -1354,8 +1385,8 @@ class NearbyProtocolEngine(
 
     private suspend fun sendSummary(endpointId: String) {
         val predictions = database.predictionDao().all().associate { it.targetNodeId to it.value }
-        val localMessageIds = database.messageDao().getBufferMessageIds()
-        val recentAcks = database.ackDao().latest(config.ackMaxSize).map {
+        val localMessageIds = database.messageDao().getBufferMessageIds().take(100)
+        val recentAcks = database.ackDao().latest(config.ackMaxSize).take(50).map {
             AckPayload(it.messageId, it.deliveredTo, it.deliveredAt, it.receivedFromNodeId)
         }
         val envelope = baseEnvelope(
@@ -1503,7 +1534,7 @@ class NearbyProtocolEngine(
     }
 
     private suspend fun tryForwardAll() {
-        refreshLocalInternetState()
+        updateLocalInternetTimestampOnly()
         cleanupLocalBuffer()
 
         val nearbyPeers = database.peerDao()
@@ -1628,7 +1659,11 @@ class NearbyProtocolEngine(
         )
         markRecentlyForwarded(message.id, candidate.peer.nodeId)
 
-        val senderCopies = if (message.destinationId == candidate.peer.nodeId) 0 else router.senderCopiesAfterForward(message.copiesLeft)
+        val senderCopies = if (message.destinationId == candidate.peer.nodeId) {
+            message.copiesLeft
+        } else {
+            router.senderCopiesAfterForward(message.copiesLeft)
+        }
         val newStatus = if (message.destinationId == candidate.peer.nodeId) {
             MessageStatus.SENDING.name
         } else {
@@ -1661,13 +1696,26 @@ class NearbyProtocolEngine(
                         error
                     )
 
-                    connectedEndpoints.remove(endpointId)
-                    connectingEndpoints.remove(endpointId)
+                    when (envelope.type) {
+                        CercaPayloadType.MESSAGE -> {
+                            connectedEndpoints.remove(endpointId)
+                            connectingEndpoints.remove(endpointId)
 
-                    scope.launch {
-                        database.peerDao().markDisconnected(endpointId)
-                        updateDensity()
-                        startDiscovery()
+                            scope.launch {
+                                database.peerDao().markDisconnected(endpointId)
+                                updateDensity()
+                                startDiscovery()
+                            }
+                        }
+
+                        CercaPayloadType.HELLO,
+                        CercaPayloadType.SUMMARY,
+                        CercaPayloadType.ACK -> {
+
+                            scope.launch {
+                                startDiscovery()
+                            }
+                        }
                     }
                 }
         }.onFailure { error ->

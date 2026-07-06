@@ -4,7 +4,7 @@ data class CercaProtocolConfig(
     val initialCopies: Int = 20,
     val messageTtlMillis: Long = 12 * 60L * 60L * 1000L,
     val utilityMargin: Double = 0.02,
-    val ackMaxSize: Int = 500,
+    val ackMaxSize: Int = 100,
     val densityNorm: Double = 10.0,
     val internetDecayMillis: Long = 60L * 60L * 1000L,
     val pEncMax: Double = 0.5,
