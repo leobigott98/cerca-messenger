@@ -126,6 +126,7 @@ class NearbyProtocolEngine(
 
     override suspend fun syncCloudNow() {
         cloudSyncService.uploadOnly()
+        cloudSyncService.downloadNow()
         tryForwardAll()
     }
 
