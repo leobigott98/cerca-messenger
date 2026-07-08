@@ -156,8 +156,10 @@ class NearbyLifecycleService : Service() {
                     Log.e(TAG, "Nearby heartbeat skipped: missing permissions")
                 }
 
-                val heartbeatMillis = CercaSettingsStore.heartbeatSeconds.value * 1000L
-                delay(heartbeatMillis)
+                val heartbeatMillis = CercaSettingsStore.heartbeatSeconds.value
+                    .coerceIn(10, 30)
+
+                delay(heartbeatMillis * 1000L)
             }
         }
     }

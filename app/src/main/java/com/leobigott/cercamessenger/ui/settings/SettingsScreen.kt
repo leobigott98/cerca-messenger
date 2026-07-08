@@ -289,7 +289,7 @@ fun SettingsScreen(
                     trailingContent = { OutlinedButton(onClick = { confirmDeleteContacts = true }) { Text(strings.delete) } }
                 )
             }
-            item { ListItem(headlineContent = { Text("About") }, supportingContent = { Text("Proyecto elaborado por estudiantes de la UNIMET. Prototipo funcional. Versión 0.4.1") }) }
+            item { ListItem(headlineContent = { Text("About") }, supportingContent = { Text("Proyecto elaborado por estudiantes de la UNIMET. Prototipo funcional. Versión 0.4.3") }) }
             item { ListItem(headlineContent = { Text("Contacto") }, supportingContent = { Text("cerca-messenger.vercel.app, cerca@lab58.dev") }) }
         }
     }

@@ -11,10 +11,10 @@ object CercaSettingsStore {
     private const val KEY_CLOUD_SYNC_ENABLED = "cloud_sync_enabled"
     private const val KEY_CLOUD_SYNC_SECONDS = "cloud_sync_seconds"
 
-    val allowedHeartbeatSeconds = listOf(15, 30, 60, 120)
+    val allowedHeartbeatSeconds = listOf(5, 15, 30, 60)
     val allowedCloudSyncSeconds = listOf(15, 30, 60, 120)
 
-    private val _heartbeatSeconds = MutableStateFlow(15)
+    private val _heartbeatSeconds = MutableStateFlow(5)
     val heartbeatSeconds: StateFlow<Int> = _heartbeatSeconds
 
     private val _cloudSyncEnabled = MutableStateFlow(true)
@@ -27,7 +27,7 @@ object CercaSettingsStore {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
         val heartbeatValue = prefs
-            .getInt(KEY_HEARTBEAT_SECONDS, 15)
+            .getInt(KEY_HEARTBEAT_SECONDS, 5)
             .takeIf { it in allowedHeartbeatSeconds }
             ?: 15
 
@@ -45,7 +45,7 @@ object CercaSettingsStore {
     }
 
     fun setHeartbeatSeconds(context: Context, seconds: Int) {
-        val safe = seconds.takeIf { it in allowedHeartbeatSeconds } ?: 15
+        val safe = seconds.takeIf { it in allowedHeartbeatSeconds } ?: 5
 
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()

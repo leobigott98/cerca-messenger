@@ -80,6 +80,9 @@ class NearbyProtocolEngine(
 
     private companion object {
         private const val TAG = "CERCA_Nearby"
+        private const val EMPTY_NEARBY_RESET_AFTER_MS = 60_000L
+        private const val MIN_NEARBY_RESET_GAP_MS = 30_000L
+        private const val PASSIVE_CONNECTION_FALLBACK_MS = 2_500L
     }
 
     private val nearbyOperationMutex = kotlinx.coroutines.sync.Mutex()
@@ -107,6 +110,7 @@ class NearbyProtocolEngine(
     private var restartingNearby = false
     private var localNodeMode: NodeMode = loadNodeMode()
     private var emptyHeartbeatCount = 0
+    private var lastEmptyNearbyResetAt: Long = 0L
 
     private val notificationHelper = CercaNotificationHelper(context)
 
@@ -663,7 +667,7 @@ class NearbyProtocolEngine(
 
     private fun hasNearbyPermissions(): Boolean {
         val missing = missingNearbyPermissions()
-        if (missing.isNotEmpty()) {
+       if (missing.isNotEmpty()) {
             Log.e(TAG, "Missing Nearby permissions: ${missing.joinToString()}")
         }
         return missing.isEmpty()
@@ -707,6 +711,34 @@ class NearbyProtocolEngine(
     }
 
     @SuppressLint("MissingPermission")
+    private suspend fun resetNearbyWhenEmpty(reason: String) {
+        Log.e(TAG, "Resetting Nearby because no connections are active. reason=$reason")
+
+        advertisingRunning = false
+        discoveryRunning = false
+        advertisingStarting.set(false)
+        discoveryStarting.set(false)
+        connectingEndpoints.clear()
+        connectedEndpoints.clear()
+
+        runCatching { client.stopDiscovery() }
+        runCatching { client.stopAdvertising() }
+
+        /*
+         * Aquí sí usamos stopAllEndpoints porque NO hay conexiones activas.
+         * Esto limpia el estado interno de Nearby después de apagar/prender
+         * Wi-Fi o Bluetooth.
+         */
+        runCatching { client.stopAllEndpoints() }
+
+        database.peerDao().markAllDisconnected()
+
+        delay(1500)
+
+        startDiscovery()
+    }
+
+    @SuppressLint("MissingPermission")
     override suspend fun refreshNearby() = nearbyOperationMutex.withLock {
         if (!hasNearbyPermissions()) {
             Log.e(TAG, "refreshNearby aborted: missing Nearby permissions")
@@ -727,18 +759,20 @@ class NearbyProtocolEngine(
         if (connectedEndpoints.isEmpty() && connectingEndpoints.isEmpty()) {
             emptyHeartbeatCount++
 
-            val hasInternet = statusProvider.hasInternet()
+            val now = System.currentTimeMillis()
+            val shouldReset =
+                now - lastEmptyNearbyResetAt >= EMPTY_NEARBY_RESET_AFTER_MS
 
-            if (!hasInternet && emptyHeartbeatCount >= 8) {
-                Log.e(TAG, "No endpoints and no internet after $emptyHeartbeatCount heartbeats. Forcing Nearby restart.")
+            if (shouldReset) {
+                Log.e(
+                    TAG,
+                    "No Nearby endpoints after heartbeat. Resetting radios. emptyHeartbeatCount=$emptyHeartbeatCount"
+                )
+
+                lastEmptyNearbyResetAt = now
                 emptyHeartbeatCount = 0
-                restartAdvertisingAndDiscoveryOnly()
+                resetNearbyWhenEmpty("empty heartbeat")
                 return
-            }
-
-            if (hasInternet && emptyHeartbeatCount >= 10) {
-                Log.d(TAG, "No Nearby endpoints, but internet is available. Not forcing Nearby restart.")
-                emptyHeartbeatCount = 0
             }
         } else {
             emptyHeartbeatCount = 0
@@ -899,6 +933,25 @@ class NearbyProtocolEngine(
         return endpointName.substringBefore("|").takeIf { it.isNotBlank() }
     }
 
+    @SuppressLint("MissingPermission")
+    private fun requestConnectionToEndpoint(endpointId: String, reason: String) {
+        if (endpointId in connectedEndpoints || endpointId in connectingEndpoints) return
+
+        connectingEndpoints.add(endpointId)
+
+        Log.d(TAG, "requestConnection reason=$reason endpointId=$endpointId")
+
+        client.requestConnection(advertisingName, endpointId, connectionLifecycleCallback)
+            .addOnSuccessListener {
+                Log.d(TAG, "requestConnection SUCCESS endpointId=$endpointId")
+            }
+            .addOnFailureListener { error ->
+                Log.e(TAG, "requestConnection FAILED endpointId=$endpointId error=${error.message}", error)
+                connectingEndpoints.remove(endpointId)
+                scope.launch { startDiscovery() }
+            }
+    }
+
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             Log.d(TAG, "onEndpointFound endpointId=$endpointId name=${info.endpointName}")
@@ -910,23 +963,27 @@ class NearbyProtocolEngine(
 
             val remoteNodeId = parseNodeIdFromEndpointName(info.endpointName)
 
-            // Evita que ambos lados pidan conexión al mismo tiempo.
-            if (remoteNodeId != null && localNodeId > remoteNodeId) {
-                Log.d(TAG, "Waiting for remote to request connection. local=$localNodeId remote=$remoteNodeId")
+            if (remoteNodeId == localNodeId) {
+                Log.d(TAG, "Ignoring self endpoint endpointId=$endpointId")
                 return
             }
 
-            connectingEndpoints.add(endpointId)
+            if (remoteNodeId != null && localNodeId > remoteNodeId) {
+                Log.d(TAG, "Passive side waiting briefly. local=$localNodeId remote=$remoteNodeId")
 
-            client.requestConnection(advertisingName, endpointId, connectionLifecycleCallback)
-                .addOnSuccessListener {
-                    Log.d(TAG, "requestConnection SUCCESS endpointId=$endpointId")
+                scope.launch {
+                    delay(PASSIVE_CONNECTION_FALLBACK_MS)
+
+                    if (endpointId !in connectedEndpoints && endpointId !in connectingEndpoints) {
+                        Log.e(TAG, "Passive fallback requesting connection endpointId=$endpointId remote=$remoteNodeId")
+                        requestConnectionToEndpoint(endpointId, "passive fallback")
+                    }
                 }
-                .addOnFailureListener { error ->
-                    Log.e(TAG, "requestConnection FAILED endpointId=$endpointId error=${error.message}", error)
-                    connectingEndpoints.remove(endpointId)
-                    restartNearbySoon()
-                }
+
+                return
+            }
+
+            requestConnectionToEndpoint(endpointId, "active side")
         }
 
         override fun onEndpointLost(endpointId: String) {
@@ -1930,22 +1987,12 @@ class NearbyProtocolEngine(
             "forceNearbyScan called. connected=${connectedEndpoints.size}, connecting=${connectingEndpoints.size}"
         )
 
-        /*
-         * Importante:
-         * No usamos stopAllEndpoints() aquí, porque eso tumbaría conexiones sanas.
-         * Solo reiniciamos advertising/discovery para forzar un nuevo escaneo.
-         */
-        advertisingRunning = false
-        discoveryRunning = false
-        advertisingStarting.set(false)
-        discoveryStarting.set(false)
-
-        runCatching { client.stopDiscovery() }
-        runCatching { client.stopAdvertising() }
-
-        kotlinx.coroutines.delay(500)
-
-        startDiscovery()
+        if (connectedEndpoints.isEmpty()) {
+            lastEmptyNearbyResetAt = System.currentTimeMillis()
+            resetNearbyWhenEmpty("manual force scan")
+        } else {
+            restartAdvertisingAndDiscoveryOnly()
+        }
 
         connectedEndpoints.toList().forEach { endpointId ->
             sendHello(endpointId)

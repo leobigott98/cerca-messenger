@@ -405,6 +405,8 @@ class FirebaseCloudSyncService(
             ) ?: return@forEach
 
             downloaded += entity.copy(
+                conversationId = localDirectConversationId(senderId, destinationId),
+                destinationScope = DestinationScope.DIRECT_CONTACT.name,
                 status = MessageStatus.DELIVERED.name,
                 copiesLeft = 0,
                 syncedToCloud = true
@@ -899,10 +901,15 @@ class FirebaseCloudSyncService(
             else -> "Encrypted relay message"
         }
 
+        val conversationId = if (destinationScope == DestinationScope.DIRECT_CONTACT.name) {
+            localDirectConversationId(senderId, destinationId)
+        } else {
+            getString("conversationId") ?: localDirectConversationId(senderId, destinationId)
+        }
+
         return DtnMessageEntity(
             id = id,
-            conversationId = getString("conversationId")
-                ?: localDirectConversationId(senderId, destinationId),
+            conversationId = conversationId,
             senderId = senderId,
             destinationId = destinationId,
             text = displayText,
