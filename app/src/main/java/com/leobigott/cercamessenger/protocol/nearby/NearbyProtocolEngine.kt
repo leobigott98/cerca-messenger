@@ -269,6 +269,20 @@ class NearbyProtocolEngine(
             return true
         }
 
+        if (connectedEndpoints.isNotEmpty()) {
+            Log.d(
+                TAG,
+                "trySendDirectNow: connected endpoints exist but destination is not mapped yet. Refreshing handshakes."
+            )
+
+            connectedEndpoints.toList().forEach { endpointId ->
+                sendHello(endpointId)
+                sendSummary(endpointId)
+            }
+
+            return false
+        }
+
         /*
          * Fallback importante:
          * puede existir conexión física por Nearby, pero todavía no sabemos qué nodeId
@@ -278,44 +292,44 @@ class NearbyProtocolEngine(
          * Si el endpoint es el destino, lo recibirá.
          * Si no es el destino, actuará como relay o lo ignorará según CERCA.
          */
-        if (connectedEndpoints.isNotEmpty()) {
-            val payload = message.toPayload()
-            val newPath = (payload.path + localNodeId).distinct()
-
-            val outboundPayload = payload.copy(
-                copiesLeft = message.copiesLeft.coerceAtLeast(1),
-                hopCount = message.hopCount,
-                path = newPath
-            )
-
-            Log.d(
-                TAG,
-                "trySendDirectNow fallback: sending message=${message.id} to connectedEndpoints=${connectedEndpoints.size}"
-            )
-
-            database.messageDao().updateRoutingState(
-                messageId = message.id,
-                copiesLeft = message.copiesLeft,
-                hopCount = message.hopCount,
-                pathCsv = newPath.joinToString(","),
-                status = MessageStatus.SENDING.name,
-                bestRelayName = "Nearby endpoint",
-                utilityScore = 1.0f
-            )
-
-            connectedEndpoints.forEach { connectedEndpointId ->
-                sendMessageEnvelope(
-                    endpointId = connectedEndpointId,
-                    messageId = message.id,
-                    envelope = baseEnvelope(
-                        type = CercaPayloadType.MESSAGE,
-                        message = outboundPayload
-                    )
-                )
-            }
-
-            return true
-        }
+//        if (connectedEndpoints.isNotEmpty()) {
+//            val payload = message.toPayload()
+//            val newPath = (payload.path + localNodeId).distinct()
+//
+//            val outboundPayload = payload.copy(
+//                copiesLeft = message.copiesLeft.coerceAtLeast(1),
+//                hopCount = message.hopCount,
+//                path = newPath
+//            )
+//
+//            Log.d(
+//                TAG,
+//                "trySendDirectNow fallback: sending message=${message.id} to connectedEndpoints=${connectedEndpoints.size}"
+//            )
+//
+//            database.messageDao().updateRoutingState(
+//                messageId = message.id,
+//                copiesLeft = message.copiesLeft,
+//                hopCount = message.hopCount,
+//                pathCsv = newPath.joinToString(","),
+//                status = MessageStatus.SENDING.name,
+//                bestRelayName = "Nearby endpoint",
+//                utilityScore = 1.0f
+//            )
+//
+//            connectedEndpoints.forEach { connectedEndpointId ->
+//                sendMessageEnvelope(
+//                    endpointId = connectedEndpointId,
+//                    messageId = message.id,
+//                    envelope = baseEnvelope(
+//                        type = CercaPayloadType.MESSAGE,
+//                        message = outboundPayload
+//                    )
+//                )
+//            }
+//
+//            return true
+//        }
 
         Log.d(
             TAG,
