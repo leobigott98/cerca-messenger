@@ -77,12 +77,14 @@ class NearbyProtocolEngine(
     private val cloudSyncService: CloudSyncService = NoOpCloudSyncService()
 ) : ProtocolEngine {
     private val recentlyForwardedToPeer = mutableMapOf<String, Long>()
+    private val connectingStartedAt = mutableMapOf<String, Long>()
 
     private companion object {
         private const val TAG = "CERCA_Nearby"
         private const val EMPTY_NEARBY_RESET_AFTER_MS = 60_000L
         private const val MIN_NEARBY_RESET_GAP_MS = 30_000L
         private const val PASSIVE_CONNECTION_FALLBACK_MS = 2_500L
+        private const val CONNECTING_ENDPOINT_TIMEOUT_MS = 20_000L
     }
 
     private val nearbyOperationMutex = kotlinx.coroutines.sync.Mutex()
@@ -158,7 +160,7 @@ class NearbyProtocolEngine(
         val now = System.currentTimeMillis()
         val key = recentlyForwardKey(messageId, peerNodeId)
         val last = recentlyForwardedToPeer[key] ?: return false
-        return now - last < 60_000L
+        return now - last < 5 * 60_000L
     }
 
     private fun markRecentlyForwarded(messageId: String, peerNodeId: String) {
@@ -166,7 +168,7 @@ class NearbyProtocolEngine(
         recentlyForwardedToPeer[recentlyForwardKey(messageId, peerNodeId)] = now
 
         if (recentlyForwardedToPeer.size > 2_000) {
-            val cutoff = now - 5 * 60_000L
+            val cutoff = now - 15 * 60_000L
             recentlyForwardedToPeer.entries.removeIf { it.value < cutoff }
         }
     }
@@ -752,8 +754,23 @@ class NearbyProtocolEngine(
         startDiscovery()
     }
 
+    private fun pruneStaleConnectingEndpoints() {
+        val now = System.currentTimeMillis()
+        val stale = connectingStartedAt
+            .filterValues { startedAt -> now - startedAt > CONNECTING_ENDPOINT_TIMEOUT_MS }
+            .keys
+
+        stale.forEach { endpointId ->
+            Log.e(TAG, "Pruning stale connecting endpoint=$endpointId")
+            connectingEndpoints.remove(endpointId)
+            connectingStartedAt.remove(endpointId)
+            runCatching { client.disconnectFromEndpoint(endpointId) }
+        }
+    }
+
     @SuppressLint("MissingPermission")
     override suspend fun refreshNearby() = nearbyOperationMutex.withLock {
+        pruneStaleConnectingEndpoints()
         if (!hasNearbyPermissions()) {
             Log.e(TAG, "refreshNearby aborted: missing Nearby permissions")
             return
@@ -952,6 +969,7 @@ class NearbyProtocolEngine(
         if (endpointId in connectedEndpoints || endpointId in connectingEndpoints) return
 
         connectingEndpoints.add(endpointId)
+        connectingStartedAt[endpointId] = System.currentTimeMillis()
 
         Log.d(TAG, "requestConnection reason=$reason endpointId=$endpointId")
 
@@ -1017,6 +1035,7 @@ class NearbyProtocolEngine(
             }
 
             connectingEndpoints.remove(endpointId)
+            connectingStartedAt.remove(endpointId)
 
             scope.launch {
                 database.peerDao().markDisconnected(endpointId)
@@ -1033,6 +1052,7 @@ class NearbyProtocolEngine(
             Log.d(TAG, "onConnectionInitiated endpointId=$endpointId name=${info.endpointName}")
 
             connectingEndpoints.add(endpointId)
+            connectingStartedAt[endpointId] = System.currentTimeMillis()
 
             client.acceptConnection(endpointId, payloadCallback)
                 .addOnSuccessListener {
@@ -1054,6 +1074,7 @@ class NearbyProtocolEngine(
             Log.d(TAG, "onConnectionResult endpointId=$endpointId status=${result.status.statusCode}")
 
             connectingEndpoints.remove(endpointId)
+            connectingStartedAt.remove(endpointId)
 
             if (result.status.isSuccess) {
                 Log.d(TAG, "Connection SUCCESS endpointId=$endpointId")
@@ -1088,6 +1109,7 @@ class NearbyProtocolEngine(
 
             connectedEndpoints.remove(endpointId)
             connectingEndpoints.remove(endpointId)
+            connectingStartedAt.remove(endpointId)
 
             scope.launch {
                 database.peerDao().markDisconnected(endpointId)
@@ -1217,6 +1239,7 @@ class NearbyProtocolEngine(
         envelope: CercaEnvelope,
         incoming: CercaMessagePayload
     ) {
+        Log.d(TAG, "handleIncomingMessage id=${incoming.id} from=${incoming.senderId} to=${incoming.destinationId} local=$localNodeId")
         database.messageDao().deleteExpiredPublicBroadcasts(System.currentTimeMillis(), DestinationScope.PUBLIC_BROADCAST.name)
 
         val isIncomingPublicBroadcast =
@@ -1481,6 +1504,7 @@ class NearbyProtocolEngine(
     }
 
     private suspend fun sendAck(endpointId: String, messageId: String, deliveredTo: String) {
+        Log.d(TAG, "sendAck messageId=$messageId deliveredTo=$deliveredTo endpoint=$endpointId")
         sendEnvelope(endpointId, baseEnvelope(type = CercaPayloadType.ACK, ack = AckPayload(messageId, deliveredTo, System.currentTimeMillis(), localNodeId)))
     }
 

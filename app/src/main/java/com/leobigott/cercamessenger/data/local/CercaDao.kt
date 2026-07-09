@@ -80,8 +80,7 @@ interface DtnMessageDao {
     UPDATE dtn_messages
     SET status = :newStatus,
     copiesLeft = CASE WHEN copiesLeft <= 0 THEN 1 ELSE copiesLeft END
-    WHERE isFromMe = 1
-      AND status = :oldStatus
+    WHERE status = :oldStatus
       AND timestamp < :olderThan
       AND ttlExpiresAt > :now
 """)

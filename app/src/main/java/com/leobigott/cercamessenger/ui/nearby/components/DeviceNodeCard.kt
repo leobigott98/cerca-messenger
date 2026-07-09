@@ -35,7 +35,7 @@ fun DeviceNodeCard(device: DeviceNode) {
                     Text(device.lastSeenText, color = if (device.isNearby) CercaColors.Success else CercaColors.Muted)
                 }
             Text("ID: ${device.id.take(12)}...", color = CercaColors.Muted)
-            Text("Modo: ${device.nodeMode.label}", color = CercaColors.Muted)
+            //Text("Modo: ${device.nodeMode.label}", color = CercaColors.Muted)
 
             MetricLine(label = "Battery E(j)", value = device.batteryLevel)
             Text(
